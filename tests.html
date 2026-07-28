@@ -79,7 +79,12 @@
       });
     }
     if (cfg.override) cfg.override(hours);
-    return { date: cfg.date || '2026-08-01', sunrise: cfg.sunrise === undefined ? 5 : cfg.sunrise, hours: hours };
+    return {
+      date: cfg.date || '2026-08-01',
+      sunrise: cfg.sunrise === undefined ? 5 : cfg.sunrise,
+      sunset: cfg.sunset === undefined ? 19 : cfg.sunset,
+      hours: hours
+    };
   }
 
   // ---------------------------------------------------------------- levelFor
@@ -150,6 +155,63 @@
   var windowCheck = R.evaluateDay(makeDay({ wind: 2, gust: 3, sunrise: 5 }));
   eq(windowCheck.window.from, 4, '判定窓の開始は日の出-1時間');
   eq(windowCheck.window.to, 9, '判定窓の終了は日の出+4時間');
+
+  section('時間帯（朝マヅメ / 昼間 / 夕マヅメ / 終日）');
+  var D = R.DEFAULTS;
+  function span(period, sr, ss) {
+    return R.windowFor(period, sr, ss, D).join('〜');
+  }
+  eq(span('morning', 5, 19), '4〜9', '朝マヅメ = 日の出-1 〜 日の出+4');
+  eq(span('evening', 5, 19), '15〜20', '夕マヅメ = 日の入-4 〜 日の入+1');
+  eq(span('day', 5, 19), '9〜15', '昼間 = 朝マヅメの終わり 〜 夕マヅメの始まり（隙間も重複も無い）');
+  eq(span('allday', 5, 19), '4〜20', '終日 = 朝マヅメの開始 〜 夕マヅメの終了');
+
+  // 冬は日照が短いので昼が自動的に縮む。固定時刻で切っていたらここがずれる。
+  eq(span('morning', 7, 16.5), '6〜11', '冬の朝マヅメ');
+  eq(span('evening', 7, 16.5), '12.5〜17.5', '冬の夕マヅメ');
+  eq(span('day', 7, 16.5), '11〜12.5', '冬の昼間は1時間半に縮む');
+
+  // 日照がさらに短く朝と夕が重なる場合は南中前後にフォールバックする
+  // 日の出8:00・日の入15:00 → 朝は12時まで、夕は11時から。重なるので南中(11:30)±1時間
+  eq(span('day', 8, 15), '10.5〜12.5', '朝と夕が重なる日は南中±1時間を昼とみなす');
+
+  ok(R.windowFor('morning', 0.5, 19, D)[0] === 0, '日の出が早すぎても0時より前にはしない');
+  ok(R.windowFor('evening', 5, 23, D)[1] === 23, '日の入が遅くても23時を超えない');
+  eq(span('unknown', 5, 19), '4〜9', '未知の時間帯は朝マヅメにフォールバック');
+
+  var evening = R.evaluateDay(makeDay({
+    wind: 2, gust: 3, wave: 0.1, sunrise: 5, sunset: 19,
+    override: function (hours) {
+      for (var h = 15; h <= 20; h++) { hours[h].wind = spread(9); hours[h].wave = 0.9; }
+    }
+  }), null, { period: 'evening' });
+  eq(evening.grade, 0, '夕マヅメを選ぶと夕方の荒れが判定に効く');
+  eq(evening.window.label, '夕マヅメ', '窓のラベルが付く');
+
+  var morningSame = R.evaluateDay(makeDay({
+    wind: 2, gust: 3, wave: 0.1, sunrise: 5, sunset: 19,
+    override: function (hours) {
+      for (var h = 15; h <= 20; h++) { hours[h].wind = spread(9); hours[h].wave = 0.9; }
+    }
+  }), null, { period: 'morning' });
+  eq(morningSame.grade, 3, '同じ日でも朝マヅメなら ◎（時間帯で判定が変わる）');
+
+  var noonPick = R.evaluateDay(makeDay({
+    wind: 2, gust: 3, wave: 0.1, sunrise: 5, sunset: 19,
+    override: function (hours) {
+      for (var h = 9; h < 15; h++) { hours[h].wind = spread(8); }
+    }
+  }), null, { period: 'day' });
+  eq(noonPick.grade, 0, '昼間を選ぶと日中の強風が効く');
+
+  var pmFlagEvening = R.evaluateDay(makeDay({
+    wind: 2, gust: 3, wave: 0.1, sunrise: 5, sunset: 19,
+    override: function (hours) {
+      for (var h = 12; h <= 16; h++) hours[h].wind = spread(15);
+    }
+  }), null, { period: 'evening' });
+  ok(pmFlagEvening.flags.indexOf('afternoonBuildup') < 0,
+    '午後の吹き上がり警告は朝マヅメのときだけ（夕方判定では意味を成さない）');
 
   section('evaluateDay: うねり補正');
   var swell = R.evaluateDay(makeDay({

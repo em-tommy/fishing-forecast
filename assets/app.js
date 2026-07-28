@@ -73,6 +73,8 @@
   var CACHE_PREFIX = 'ff:cache:v1:';
   var SETTINGS_KEY = 'ff:settings:v1';
   var THEME_KEY = 'ff:theme';
+  // 判定する時間帯はタブごとに持つ。出船は朝、東京湾のアジは夕方と、狙う時間が違うため。
+  var PERIOD_KEY = { boat: 'ff:period:boat', shore: 'ff:period:shore' };
 
   // ================================================================ 小物
 
@@ -368,10 +370,14 @@
   function evaluateBundle(bundle, settings) {
     var spot = bundle.spot;
     var official = state.jma[spot.id];
+    var period = state.period[spot.kind === 'boat' ? 'boat' : 'shore'];
     return bundle.dates.map(function (date) {
       var d = bundle.daily[date] || {};
-      var day = { date: date, sunrise: d.sunrise, hours: bundle.hours[date] };
-      var res = R.evaluateDay(day, settings, { checkDirection: spot.kind === 'boat' });
+      var day = { date: date, sunrise: d.sunrise, sunset: d.sunset, hours: bundle.hours[date] };
+      var res = R.evaluateDay(day, settings, {
+        checkDirection: spot.kind === 'boat',
+        period: period
+      });
       res.daily = d;
       res.tide = TIDE.daySummary(spot.tide, date);
       res.dayMaxWave = R.maxOf(bundle.hours[date].map(function (h) { return h.wave; }));
@@ -426,7 +432,7 @@
     out.push('<svg class="chart" viewBox="0 0 ' + W + ' ' + H +
       '" preserveAspectRatio="none" role="img" aria-label="' + esc(opts.title || '') + '">');
 
-    // 朝マヅメ帯の帯
+    // 判定時間帯の帯
     if (opts.band && isNum(opts.band.from) && isNum(opts.band.to)) {
       out.push('<rect class="band" x="' + px(opts.band.from).toFixed(1) + '" y="' + y0 +
         '" width="' + Math.max(1, px(opts.band.to) - px(opts.band.from)).toFixed(1) +
@@ -605,38 +611,54 @@
       '</span><span class="lbl">' + gi.label + '</span></span>';
   }
 
-  var FLAG_LABEL = {
-    thunder: ['雷予報・出船不可', 'warn'],
-    windOnly: ['波高データなし・風のみ判定', 'warn'],
-    longSwell: ['長周期うねり', 'warn'],
-    onshore: ['吹き付け風（岸向き）', 'warn'],
-    offshore: ['沖出し注意', 'info'],
-    heavyRain: ['強い雨・雪', 'warn'],
-    afternoonBuildup: ['午後に吹き上がり', 'warn'],
-    noData: ['データなし', '']
-  };
-
   function badgesHtml(res) {
     if (!res.flags || !res.flags.length) return '';
     return '<div class="badges">' + res.flags.map(function (f) {
-      var d = FLAG_LABEL[f];
+      var d = R.FLAGS[f];
       if (!d) return '';
-      return '<span class="badge ' + d[1] + '">' + esc(d[0]) + '</span>';
+      return '<span class="badge ' + d.tone + '" title="' + esc(d.desc) + '">' + esc(d.label) + '</span>';
     }).join('') + '</div>';
   }
 
   var CONF_RANK = { high: 3, mid: 2, low: 1, unknown: 0 };
 
   /**
+   * 選んだ時間帯の判定に合わせた時間帯セレクタ。
+   * 出船は朝、東京湾のアジは夕方と狙う時間が違うので、タブごとに別々に保持する。
+   */
+  function periodPicker(scope, onChange) {
+    var wrap = el('div', 'chips');
+    wrap.style.marginBottom = '8px';
+    R.PERIOD_ORDER.forEach(function (key) {
+      var p = R.PERIODS[key];
+      var b = el('button', null, p.label);
+      b.type = 'button';
+      b.title = p.desc;
+      b.setAttribute('aria-pressed', String(state.period[scope] === key));
+      b.addEventListener('click', function () {
+        state.period[scope] = key;
+        store.set(PERIOD_KEY[scope], key);
+        recomputeAll();
+        if (onChange) onChange();
+      });
+      wrap.appendChild(b);
+    });
+    var box = el('div');
+    box.appendChild(el('div', 'muted', 'どの時間帯で判定するか（日の出・日の入を基準に自動で決まります）'));
+    box.appendChild(wrap);
+    return box;
+  }
+
+  /**
    * 16日ストリップ用の天気マークと降水確率。
-   * 判定が朝マヅメ帯なので、マークも降水確率も同じ時間帯の値をとる
+   * 判定した時間帯と同じ値をとる
    * （日中の代表値を出すと「強い雨なのに ◎」のように判定と食い違って見える）。
    */
   function weatherCell(res) {
     var w = weatherOf(res.metrics.weatherCode);
     var pop = res.metrics.maxPrecipProb;
     var cls = isNum(pop) && pop >= 50 ? 'pop wet' : 'pop';
-    return '<div class="wx" title="朝マヅメ帯の天気と降水確率">' +
+    return '<div class="wx" title="' + esc(res.window.label) + '帯の天気と降水確率">' +
       '<span class="ico">' + w[1] + '</span>' +
       '<span class="' + cls + '">' + (isNum(pop) ? pop + '%' : '—') + '</span>' +
       '</div>';
@@ -651,6 +673,10 @@
 
   var state = {
     settings: loadSettings(),
+    period: {
+      boat: store.get(PERIOD_KEY.boat, 'morning'),
+      shore: store.get(PERIOD_KEY.shore, 'morning')
+    },
     bundles: {},      // spotId -> bundle
     jma: {},          // spotId -> 気象庁の公式予報
     results: {},      // spotId -> [dayResult]
@@ -665,6 +691,8 @@
     host.innerHTML = '';
     var results = state.results.naoetsu;
     if (!results) return;
+
+    host.appendChild(periodPicker('boat'));
 
     var wins = R.findCalmWindows(results, { minGrade: 2, minLen: 2 });
     var head = el('h2', null, '出船候補（2日以上つづく凪）');
@@ -704,6 +732,7 @@
       var winds = w.days.map(function (d) { return d.metrics.maxWind; }).filter(isNum);
       var waves = w.days.map(function (d) { return d.metrics.maxWave; }).filter(isNum);
       var ranges = w.days.map(function (d) { return d.tide ? d.tide.range : null; }).filter(isNum);
+      var pLabel = w.days[0].window.label;
 
       // 日数が増えると1日ずつ並べても読めないので、要約する。
       // モデル一致度は窓の中で最も低い日を出す（一番信用できない日が判断を決めるため）。
@@ -723,8 +752,8 @@
         ' <span class="sub">' + w.length + (w.windOnly ? '日（風のみ）' : '日連続') + '</span></div>' +
         '<div style="margin-top:6px">' + gradeBadge(w.days[0]) + '</div>' +
         '<dl>' +
-        '<dt>朝の風</dt><dd>最大 ' + fmt(Math.max.apply(null, winds), 1) + ' m/s</dd>' +
-        '<dt>朝の波</dt><dd>' + (waves.length ? '最大 ' + fmt(Math.max.apply(null, waves), 2) + ' m' : 'データなし') + '</dd>' +
+        '<dt>' + esc(pLabel) + 'の風</dt><dd>最大 ' + fmt(Math.max.apply(null, winds), 1) + ' m/s</dd>' +
+        '<dt>' + esc(pLabel) + 'の波</dt><dd>' + (waves.length ? '最大 ' + fmt(Math.max.apply(null, waves), 2) + ' m' : 'データなし') + '</dd>' +
         '<dt>モデル一致</dt><dd>最低 ' + esc(worst.confidence.label) +
         '<span class="muted">（' + esc(dateLabel(worst.date)) + '）</span></dd>' +
         '<dt>潮回り</dt><dd>' + esc(phaseText) +
@@ -781,8 +810,8 @@
         '<div class="range">' + esc(dateLabel(r.date)) + '</div>' +
         '<div style="margin-top:6px">' + gradeBadge(r) + '</div>' +
         '<dl>' +
-        '<dt>朝の風</dt><dd>最大 ' + fmt(r.metrics.maxWind, 1) + ' m/s</dd>' +
-        '<dt>朝の波</dt><dd>最大 ' + fmt(r.metrics.maxWave, 2) + ' m</dd>' +
+        '<dt>' + esc(r.window.label) + 'の風</dt><dd>最大 ' + fmt(r.metrics.maxWind, 1) + ' m/s</dd>' +
+        '<dt>' + esc(r.window.label) + 'の波</dt><dd>最大 ' + fmt(r.metrics.maxWave, 2) + ' m</dd>' +
         '<dt>モデル一致</dt><dd>' + esc(r.confidence.label) + '</dd>' +
         '<dt>潮回り</dt><dd>' + (r.tide ? esc(r.tide.phase) +
           ' <span class="muted">潮差' + Math.round(r.tide.range) + 'cm</span>' : '—') + '</dd>' +
@@ -835,8 +864,9 @@
     host.appendChild(strip);
 
     var legend = el('div', 'muted');
-    legend.textContent = '◎出船適 ／ ○出船可 ／ △要注意 ／ ×出船不可（朝マヅメ帯の最悪値で判定）。' +
-      '天気マークと％、風速・波高はいずれも朝マヅメ帯の値（％は降水確率、50%以上は赤）。';
+    var pl = R.PERIODS[state.period.boat].label;
+    legend.textContent = '◎出船適 ／ ○出船可 ／ △要注意 ／ ×出船不可（' + pl + '帯の最悪値で判定）。' +
+      '天気マークと％、風速・波高はいずれも' + pl + '帯の値（％は降水確率、50%以上は赤）。';
     host.appendChild(legend);
   }
 
@@ -896,19 +926,19 @@
     var mw = weatherOf(res.metrics.weatherCode);
     var kv = el('dl', 'kv');
     kv.innerHTML =
-      '<dt>朝マヅメの天気</dt><dd>' + mw[1] + ' ' + esc(mw[0]) +
+      '<dt>' + esc(res.window.label) + 'の天気</dt><dd>' + mw[1] + ' ' + esc(mw[0]) +
       '（降水確率 最大 ' + (isNum(res.metrics.maxPrecipProb) ? res.metrics.maxPrecipProb + '%' : '—') + '）</dd>' +
       '<dt>その日全体</dt><dd class="sub">' + w[1] + ' ' + esc(w[0]) +
       '（降水確率 最大 ' + (isNum(daily.precipMax) ? daily.precipMax + '%' : '—') + '）</dd>' +
       '<dt>気温</dt><dd>' + fmt(daily.tMin, 1) + '〜' + fmt(daily.tMax, 1) + ' ℃</dd>' +
       '<dt>日の出/日の入</dt><dd>' + daily.sunriseText + ' / ' + daily.sunsetText + '</dd>' +
-      '<dt>判定時間帯</dt><dd>' + decimalToHHMM(res.window.from) + '〜' + decimalToHHMM(res.window.to) + '（朝マヅメ）</dd>' +
-      '<dt>朝の風向</dt><dd>' + (res.metrics.dirName ? esc(res.metrics.dirName) + '（' + res.metrics.dirDeg + '°）' : '—') + '</dd>' +
+      '<dt>判定時間帯</dt><dd>' + decimalToHHMM(res.window.from) + '〜' + decimalToHHMM(res.window.to) + '（' + esc(res.window.label) + '）</dd>' +
+      '<dt>' + esc(res.window.label) + 'の風向</dt><dd>' + (res.metrics.dirName ? esc(res.metrics.dirName) + '（' + res.metrics.dirDeg + '°）' : '—') + '</dd>' +
       (tide
         ? '<dt>潮回り</dt><dd>' + esc(tide.phase) + '　潮差 ' + Math.round(tide.range) + ' cm　月齢 ' + tide.moonAge + '</dd>' +
           '<dt>満潮</dt><dd>' + (tide.highs.map(function (e) { return e.time + '（' + e.level + 'cm）'; }).join('　') || '—') + '</dd>' +
           '<dt>干潮</dt><dd>' + (tide.lows.map(function (e) { return e.time + '（' + e.level + 'cm）'; }).join('　') || '—') + '</dd>' +
-          '<dt>朝マヅメの潮</dt><dd>' + (trend ? (trend === '停滞' ? 'ほぼ動かない' : trend + '潮') : '—') +
+          '<dt>' + esc(res.window.label) + 'の潮</dt><dd>' + (trend ? (trend === '停滞' ? 'ほぼ動かない' : trend + '潮') : '—') +
             (mazume.length ? '　<span class="muted">窓内に' + mazume.map(function (m) { return m.kind + ' ' + m.time; }).join('・') + '</span>' : '') +
           '</dd>'
         : '<dt>潮汐</dt><dd>この日のデータがありません</dd>');
@@ -1056,7 +1086,7 @@
 
     wrap.innerHTML =
       '<table><caption class="muted" style="text-align:left;padding:4px 0">' +
-      '朝マヅメ帯（' + decimalToHHMM(from) + '〜' + decimalToHHMM(to) + '）のモデル別の値' +
+      esc(res.window.label) + '帯（' + decimalToHHMM(from) + '〜' + decimalToHHMM(to) + '）のモデル別の値' +
       '</caption><thead><tr>' +
       '<th>モデル</th><th>風速 m/s</th><th>最大瞬間</th><th>風向</th><th>単独判定</th>' +
       '</tr></thead><tbody>' + rows + '</tbody></table>' +
@@ -1192,8 +1222,9 @@
     var dates = state.results[ready[0].id].map(function (r) { return r.date; });
     if (!state.shoreDate || dates.indexOf(state.shoreDate) < 0) state.shoreDate = dates[0];
 
-    // 日付チップ
+    // 時間帯と日付
     var chipCard = el('div', 'card');
+    chipCard.appendChild(periodPicker('shore'));
     chipCard.appendChild(el('h2', null, '日付を選ぶ'));
     var chips = el('div', 'chips');
     dates.forEach(function (d) {
@@ -1213,6 +1244,7 @@
     note.textContent = '陸っぱりなので風向ペナルティは適用していない。東京湾内の波高は約25km格子の推計値で、実際の岸壁の状況とは差が出る。判定は風・波・降水から。';
     cmp.appendChild(note);
 
+    var periodLabel = R.PERIODS[state.period.shore].label;
     var rows = ready.map(function (spot) {
       var res = state.results[spot.id].filter(function (r) { return r.date === state.shoreDate; })[0];
       if (!res) return '';
@@ -1238,8 +1270,8 @@
     var wrap = el('div', 'tbl-wrap');
     wrap.innerHTML =
       '<table><thead><tr>' +
-      '<th>釣り場</th><th>朝判定</th><th>風 m/s</th><th>突風</th><th>風向</th><th>波 m</th>' +
-      '<th>天気/降水</th><th>潮回り</th><th>満潮</th><th>干潮</th><th>朝の潮</th>' +
+      '<th>釣り場</th><th>' + esc(periodLabel) + '判定</th><th>風 m/s</th><th>突風</th><th>風向</th><th>波 m</th>' +
+      '<th>天気/降水</th><th>潮回り</th><th>満潮</th><th>干潮</th><th>' + esc(periodLabel) + 'の潮</th>' +
       '</tr></thead><tbody>' + rows + '</tbody></table>';
     cmp.appendChild(wrap);
     // 判定を色だけで伝えない。記号の意味をこのタブにも置く。
@@ -1304,8 +1336,11 @@
     { key: 'swellPeriodWarn', label: '格下げするうねり周期', unit: ' s', min: 5, max: 14, step: .5,
       hint: 'この周期以上、かつ下のうねり高さ以上のとき1段階格下げ' },
     { key: 'swellHeightWarn', label: '格下げするうねり高さ', unit: ' m', min: .05, max: 1, step: .05 },
-    { key: 'windowBeforeSunrise', label: '判定窓の開始（日の出の何時間前）', unit: ' 時間', min: 0, max: 3, step: .5 },
-    { key: 'windowAfterSunrise', label: '判定窓の終了（日の出の何時間後）', unit: ' 時間', min: 1, max: 10, step: .5 },
+    { key: 'windowBeforeSunrise', label: '朝マヅメ帯の開始（日の出の何時間前）', unit: ' 時間', min: 0, max: 3, step: .5 },
+    { key: 'windowAfterSunrise', label: '朝マヅメ帯の終了（日の出の何時間後）', unit: ' 時間', min: 1, max: 10, step: .5,
+      hint: '「昼間」はこの終わりから、下の夕マヅメの始まりまでになります' },
+    { key: 'windowBeforeSunset', label: '夕マヅメ帯の開始（日の入の何時間前）', unit: ' 時間', min: 1, max: 10, step: .5 },
+    { key: 'windowAfterSunset', label: '夕マヅメ帯の終了（日の入の何時間後）', unit: ' 時間', min: 0, max: 3, step: .5 },
     { key: 'onshoreMinWind', label: '風向ペナルティを効かせ始める風速', unit: ' m/s', min: 0, max: 8, step: .5,
       hint: 'これ未満の弱い風なら岸向きでも格下げしない' },
     { key: 'afternoonRiseDelta', label: '午後の吹き上がり警告のしきい値', unit: ' m/s', min: 1, max: 10, step: .5 }
@@ -1318,7 +1353,7 @@
     var card = el('div', 'card');
     card.appendChild(el('h2', null, '出船判定のしきい値'));
     var lead = el('div', 'sub');
-    lead.textContent = '2馬力3mボートを前提にした保守的な初期値です。判定は朝マヅメ帯の最悪値で行い、' +
+    lead.textContent = '2馬力3mボートを前提にした保守的な初期値です。判定は選んだ時間帯の最悪値で行い、' +
       '◎と×の中間が○、×の直前が△になります。変更はこの端末のブラウザに保存されます。';
     card.appendChild(lead);
 
@@ -1412,7 +1447,13 @@
     renderDetail();
     renderOfficialPanel();
     renderShore();
+    renderManual();
     setStamp();
+  }
+
+  function renderManual() {
+    // しきい値や時間帯を変えたら説明も追従させる（説明だけ古くなるのを防ぐ）
+    if (FF.manual) FF.manual.render($('#manual-body'), state.settings, state.period);
   }
 
   function renderOfficialPanel() {
@@ -1564,6 +1605,7 @@
     initTabs();
     initTheme();
     renderSettings();
+    renderManual();
     $('#refresh').addEventListener('click', function () {
       // 明示的な再取得ではキャッシュを捨てる
       Object.keys(localStorage).forEach(function (k) {

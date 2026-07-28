@@ -377,6 +377,32 @@ footer {
 }
 footer a { color: var(--text-secondary); }
 
+/* ---------------------------------------------------------------- 使い方タブ */
+
+.manual-figure {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  margin: 10px 0;
+}
+.manual-callouts {
+  margin: 0;
+  padding-left: 1.4em;
+  font-size: .84rem;
+  color: var(--text-secondary);
+  flex: 1 1 260px;
+}
+.manual-callouts li { margin: 1px 0; }
+.manual-steps {
+  margin: 6px 0 0;
+  padding-left: 1.3em;
+  font-size: .88rem;
+}
+.manual-steps li { margin: 5px 0; }
+#manual-body table td { white-space: nowrap; }
+#manual-body .card h2 { font-size: 1rem; margin-bottom: 4px; }
+
 .chips { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 6px; }
 .chips button { white-space: nowrap; }
 .chips button[aria-pressed='true'] { border-color: var(--s1); font-weight: 600; }

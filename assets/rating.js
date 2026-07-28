@@ -44,6 +44,9 @@
     // 朝マヅメ判定窓（日の出基準の時間オフセット）
     windowBeforeSunrise: 1,
     windowAfterSunrise: 4,
+    // 夕マヅメ判定窓（日の入基準）。朝と対称に取る
+    windowBeforeSunset: 4,
+    windowAfterSunset: 1,
 
     // モデル一致度（風速の標準偏差 m/s）
     confidenceHigh: 1.0,
@@ -59,8 +62,63 @@
 
   var NO_DATA = { symbol: '—', label: 'データなし', key: 'none' };
 
+  /**
+   * 判定に付くバッジ。表示にも「使い方」の説明にもここを使う。
+   * 説明文を別に持つとコードを直したときにマニュアルだけ古くなるため。
+   *   tone: 'warn' 危険側の情報 / 'info' 参考情報 / '' 中立
+   *   effect: 判定への影響
+   */
+  var FLAGS = {
+    thunder: {
+      label: '雷予報・出船不可', tone: 'warn', effect: '判定を × に固定',
+      desc: '朝マヅメ帯に雷の予報がある日。風も波も穏やかでも × にする。小型艇は逃げ場がないため。'
+    },
+    windOnly: {
+      label: '波高データなし・風のみ判定', tone: 'warn', effect: '判定の上限を ○ に制限',
+      desc: '波浪予報は8日先までしか存在しない。9日目以降は風だけの暫定判定なので ◎ は付けない。' +
+        'これを「波が穏やか」の根拠にはできない。'
+    },
+    longSwell: {
+      label: '長周期うねり', tone: 'warn', effect: '1段階格下げ',
+      desc: '周期が長く高さもあるうねりが入る日。波高の数字以上に3m艇は揺れる。'
+    },
+    onshore: {
+      label: '吹き付け風（岸向き）', tone: 'warn', effect: '1段階格下げ',
+      desc: '岸に向かって吹く風。うねりが立ちやすく帰航が難しくなる。直江津のみ適用し、陸っぱりでは見ない。'
+    },
+    offshore: {
+      label: '沖出し注意', tone: 'info', effect: '判定は下げない',
+      desc: '陸から海へ吹く風。海面は穏やかになるが沖へ流されやすい。'
+    },
+    heavyRain: {
+      label: '強い雨・雪', tone: 'warn', effect: '1段階格下げ',
+      desc: '視界が落ち、体温も奪われるため下げる。弱い雨では下げない。'
+    },
+    afternoonBuildup: {
+      label: '午後に吹き上がり', tone: 'warn', effect: '判定は下げない',
+      desc: '朝は穏やかでも昼から強まる日。早上がりを前提に組み立てること。'
+    },
+    noData: {
+      label: 'データなし', tone: '', effect: '判定しない',
+      desc: 'その日の気象データが取れていない。'
+    }
+  };
+
   var DIR16 = ['北', '北北東', '北東', '東北東', '東', '東南東', '南東', '南南東',
     '南', '南南西', '南西', '西南西', '西', '西北西', '北西', '北北西'];
+
+  /**
+   * 判定する時間帯。すべて日の出・日の入を基準にする。
+   * 固定時刻で切ると季節でずれるが、太陽基準なら夏は昼が長く冬は短く、自動で実態に合う。
+   * 昼間は「朝マヅメの終わり〜夕マヅメの始まり」と定義するので、隙間も重複も出ない。
+   */
+  var PERIODS = {
+    morning: { key: 'morning', label: '朝マヅメ', short: '朝', desc: '日の出前後から午前中' },
+    day: { key: 'day', label: '昼間', short: '昼', desc: '朝マヅメの終わりから夕マヅメの始まりまで' },
+    evening: { key: 'evening', label: '夕マヅメ', short: '夕', desc: '午後から日の入前後' },
+    allday: { key: 'allday', label: '終日', short: '終日', desc: '日の出前から日の入後まで通し' }
+  };
+  var PERIOD_ORDER = ['morning', 'day', 'evening', 'allday'];
 
   // WMO 天気コード
   var THUNDER_CODES = [95, 96, 99];
@@ -149,6 +207,42 @@
     return Math.round(v * f) / f;
   }
 
+  /**
+   * 判定する時間帯の [開始, 終了]（小数時）を返す。
+   * @param {string} period PERIODS のキー
+   * @param {number} sunrise 日の出（小数時）
+   * @param {number} sunset  日の入（小数時）
+   */
+  function windowFor(period, sunrise, sunset, T) {
+    var mFrom = sunrise - T.windowBeforeSunrise;
+    var mTo = sunrise + T.windowAfterSunrise;
+    var eFrom = sunset - T.windowBeforeSunset;
+    var eTo = sunset + T.windowAfterSunset;
+    var from, to;
+
+    if (period === 'evening') {
+      from = eFrom; to = eTo;
+    } else if (period === 'allday') {
+      from = mFrom; to = eTo;
+    } else if (period === 'day') {
+      from = mTo; to = eFrom;
+      // 冬至前後は日照が短く、朝と夕の窓が重なって昼が消える。
+      // そのときは南中前後の2時間を昼とみなす。
+      if (to - from < 1) {
+        var noon = (sunrise + sunset) / 2;
+        from = noon - 1;
+        to = noon + 1;
+      }
+    } else {
+      from = mFrom; to = mTo;
+    }
+
+    from = Math.max(0, Math.min(23, from));
+    to = Math.max(0, Math.min(23, to));
+    if (to <= from) to = Math.min(23, from + 1);
+    return [from, to];
+  }
+
   // ------------------------------------------------------------ 日別評価
 
   /**
@@ -164,15 +258,19 @@
    *     ]
    *   }
    * @param {Object} [thresholds] DEFAULTS を上書きする値
-   * @param {Object} [opts] { checkDirection: boolean }  陸っぱりでは風向ペナルティを外す
+   * @param {Object} [opts] { checkDirection: boolean, period: 'morning'|'day'|'evening'|'allday' }
    */
   function evaluateDay(day, thresholds, opts) {
     var T = Object.assign({}, DEFAULTS, thresholds || {});
-    var O = Object.assign({ checkDirection: true }, opts || {});
+    var O = Object.assign({ checkDirection: true, period: 'morning' }, opts || {});
+    var period = PERIODS[O.period] ? O.period : 'morning';
 
     var sunrise = isNum(day.sunrise) ? day.sunrise : 5;
-    var from = Math.max(0, sunrise - T.windowBeforeSunrise);
-    var to = Math.min(23, sunrise + T.windowAfterSunrise);
+    var sunset = isNum(day.sunset) ? day.sunset : 18;
+    var span = windowFor(period, sunrise, sunset, T);
+    var from = span[0];
+    var to = span[1];
+    var periodInfo = PERIODS[period];
 
     var winds = [], gusts = [], waves = [], swellH = [], swellT = [];
     var dirs = [], spreads = [], precip = [], codes = [];
@@ -226,7 +324,7 @@
         date: day.date,
         grade: null,
         gradeInfo: NO_DATA,
-        window: { from: round(from, 2), to: round(to, 2) },
+        window: { from: round(from, 2), to: round(to, 2), period: period, label: periodInfo.label },
         metrics: {},
         flags: ['noData'],
         reasons: ['この日の気象データがありません'],
@@ -238,7 +336,7 @@
 
     // 判定の根拠を残す（数字だけ出しても信用できないため）
     if (isNum(maxWind)) {
-      reasons.push('朝マヅメ帯の最大風速 ' + round(maxWind, 1) + ' m/s → ' +
+      reasons.push(periodInfo.label + '帯の最大風速 ' + round(maxWind, 1) + ' m/s → ' +
         symbolOf(levelFor(maxWind, T.goodWind, T.fairWind)));
     }
     if (isNum(maxGust)) {
@@ -259,7 +357,7 @@
     if (hasThunder && T.thunderBlocks) {
       grade = 0;
       flags.push('thunder');
-      reasons.push('朝マヅメ帯に雷の予報 → 風・波によらず出船不可');
+      reasons.push(periodInfo.label + '帯に雷の予報 → 風・波によらず出船不可');
     } else if (hasHeavyRain) {
       grade = Math.max(0, grade - 1);
       flags.push('heavyRain');
@@ -301,7 +399,7 @@
       reasons.push(dirName(avgDir) + 'の陸風。海面は穏やかだが沖へ流されやすいので注意');
     }
 
-    // --- 午後の吹き上がり
+    // --- 午後の吹き上がり。判定窓より後の時間の話なので、朝マヅメで判定するときだけ意味がある
     var afternoon = [];
     for (var k = 12; k <= 16 && k < day.hours.length; k++) {
       if (day.hours[k]) {
@@ -310,7 +408,8 @@
       }
     }
     var maxAfternoon = maxOf(afternoon);
-    if (isNum(maxAfternoon) && isNum(maxWind) && maxAfternoon - maxWind >= T.afternoonRiseDelta) {
+    if (period === 'morning' && isNum(maxAfternoon) && isNum(maxWind) &&
+        maxAfternoon - maxWind >= T.afternoonRiseDelta) {
       flags.push('afternoonBuildup');
       reasons.push('午後（12〜16時）に ' + round(maxAfternoon, 1) +
         ' m/s まで吹き上がる見込み。早上がり推奨');
@@ -338,7 +437,10 @@
       date: day.date,
       grade: grade,
       gradeInfo: GRADES[grade],
-      window: { from: round(from, 2), to: round(to, 2), hours: usedHours },
+      window: {
+        from: round(from, 2), to: round(to, 2), hours: usedHours,
+        period: period, label: periodInfo.label, short: periodInfo.short
+      },
       metrics: {
         maxWind: round(maxWind, 1),
         minWind: round(winds.length ? Math.min.apply(null, winds) : null, 1),
@@ -464,6 +566,10 @@
     DEFAULTS: DEFAULTS,
     GRADES: GRADES,
     NO_DATA: NO_DATA,
+    FLAGS: FLAGS,
+    PERIODS: PERIODS,
+    PERIOD_ORDER: PERIOD_ORDER,
+    windowFor: windowFor,
     median: median,
     stdev: stdev,
     maxOf: maxOf,
