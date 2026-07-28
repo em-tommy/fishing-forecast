@@ -1,0 +1,36 @@
+name: Refresh Yahoo weekly forecast
+
+# Yahoo!天気の週間予報は 1日に数回（5時/11時/17時ごろ）更新される。
+# ページ2枚だけを1日4回、ツール名を名乗る User-Agent で取りにいく。
+# 間隔を詰めないこと。個人が予報を見比べるためのものである。
+on:
+  schedule:
+    - cron: '30 21,3,9,15 * * *' # JST 06:30 / 12:30 / 18:30 / 00:30
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch Yahoo weekly forecast
+        shell: pwsh
+        # 取得に失敗しても直前のデータを残す。アプリは古い値でも動く。
+        run: ./tools/Fetch-Yahoo.ps1 -AllowMissing
+
+      - name: Commit if changed
+        shell: bash
+        run: |
+          if [ -z "$(git status --porcelain data/yahoo.js)" ]; then
+            echo "変更なし"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add data/yahoo.js
+          git commit -m 'Yahoo天気の週間予報を更新'
+          git push

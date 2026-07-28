@@ -18,9 +18,12 @@
 <!-- tide-data:start / rewritten by tools/Build-Tide.ps1 -->
 <script src="data/tide-2026.js"></script>
 <!-- tide-data:end -->
+<!-- Yahoo!天気の週間予報（tools/Fetch-Yahoo.ps1 が生成）。無くてもアプリは動く -->
+<script src="data/yahoo.js"></script>
 <script src="assets/tide.js"></script>
 <script src="assets/rating.js"></script>
 <script src="assets/jma.js"></script>
+<script src="assets/yahoo.js"></script>
 <script>
 (function () {
   var out = document.getElementById('out');
@@ -372,6 +375,35 @@
   eq(cPop.length, 1, '降水確率が30ポイント以上違えば知らせる');
   eq(cPop[0].kind, 'pop', '種別は pop');
   eq(R.findConflicts(withOfficial({ waveMeters: null, pop: 25 })).length, 0, '差25ポイントでは出さない');
+  section('Yahoo天気の突き合わせ');
+  eq(FF.yahoo.icon('曇一時雨'), '🌧', '雨を含めば雨アイコン');
+  eq(FF.yahoo.icon('晴時々曇'), '⛅', '晴と曇が混ざれば薄曇り');
+  eq(FF.yahoo.icon('晴'), '☀', '晴');
+  eq(FF.yahoo.icon('曇時々雪'), '🌨', '雪が優先');
+  eq(FF.yahoo.icon('雷を伴う雨'), '⛈', '雷が最優先');
+  eq(FF.yahoo.icon(null), '·', '値なし');
+  ok(FF.yahoo.available(), 'data/yahoo.js が読み込まれている');
+  ok(FF.yahoo.point('15222') && FF.yahoo.point('15222').name === '上越市', '上越市の地点が引ける');
+  ok(FF.yahoo.coverage('15222').count >= 3, '上越市に3日以上のデータがある');
+  ok(FF.yahoo.point('99999') === null, '未知の地点コードは null');
+
+  // Yahoo 10% / 当アプリ 50% / 気象庁 50% なので、当アプリとの差と気象庁との割れの両方が出る
+  var cy = R.findConflicts(withOfficial({ waveMeters: null, pop: 50 }, { yahoo: { pop: 10 } }));
+  ok(cy.some(function (c) { return c.kind === 'yahooPop'; }),
+    'Yahooと当アプリの降水確率が30ポイント以上違えば知らせる');
+  // Yahoo 10 / 気象庁 35 / 当アプリ 45 → Yahoo対当アプリだけが30ポイント以上離れる
+  var cyOnly = R.findConflicts(withOfficial(
+    { waveMeters: null, pop: 35 }, { yahoo: { pop: 10 }, daily: { precipMax: 45 } }));
+  eq(cyOnly.length, 1, '気象庁とYahooが近ければ、当アプリとの差だけを出す');
+  eq(cyOnly[0].kind, 'yahooPop', '種別は yahooPop');
+  var cSplit = R.findConflicts(withOfficial({ waveMeters: null, pop: 80 }, { yahoo: { pop: 50 } }));
+  ok(cSplit.some(function (c) { return c.kind === 'sourceSplit'; }),
+    '気象庁とYahooが割れていることも知らせる');
+  eq(R.findConflicts(withOfficial({ waveMeters: null, pop: 50 }, { yahoo: { pop: 45 } })).length, 0,
+    '5ポイント差では何も出さない');
+  eq(R.findConflicts(withOfficial({ waveMeters: null, pop: 50 }, { yahoo: null })).length, 0,
+    'Yahooのデータが無い日は何も出さない');
+
   var cRel = R.findConflicts(withOfficial({ waveMeters: null, pop: 50, reliability: 'C' }));
   eq(cRel.length, 1, 'モデルは一致でも気象庁の確度が C なら知らせる');
   eq(R.findConflicts(withOfficial({ waveMeters: null, pop: 50, reliability: 'A' })).length, 0,

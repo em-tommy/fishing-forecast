@@ -514,6 +514,26 @@
         text: '当アプリはモデルが一致しているが、気象庁は週間予報の確度を C（低い）としている'
       });
     }
+
+    // Yahoo!天気（日本気象協会）は気象庁の中継ではなく独自に補正しているので、
+    // 気象庁とも当アプリとも割れることがある。割れている日は素直に不確実。
+    var y = res.yahoo;
+    if (y && isNum(y.pop)) {
+      if (isNum(modelPop) && Math.abs(y.pop - modelPop) >= CONFLICT.popGap) {
+        out.push({
+          kind: 'yahooPop',
+          text: 'Yahoo天気と降水確率が食い違う（その日の最大で Yahoo ' + y.pop +
+            '% / 当アプリ ' + modelPop + '%）'
+        });
+      }
+      if (isNum(o.pop) && Math.abs(y.pop - o.pop) >= CONFLICT.popGap) {
+        out.push({
+          kind: 'sourceSplit',
+          text: '気象庁とYahoo天気で降水確率が割れている（気象庁 ' + o.pop + '% / Yahoo ' + y.pop +
+            '%）。予報が固まっていない日'
+        });
+      }
+    }
     return out;
   }
 

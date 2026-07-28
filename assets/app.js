@@ -38,6 +38,7 @@
       id: 'naoetsu', name: '直江津 第三堤防沖', short: '直江津', kind: 'boat',
       lat: 37.219960, lon: 138.278409, tide: 'T3',
       jma: { pref: '150000', area: '150030' }, // 新潟県 / 上越
+      yahoo: '15222',                          // Yahoo!天気の上越市
       target: '尺アジ・マダイ・青物'
     },
     { id: 'wakasu', name: '若洲海浜公園', short: '若洲', kind: 'shore', lat: 35.618, lon: 139.822, tide: 'TK', jma: { pref: '130000', area: '130010' }, target: 'アジ・タコ' },
@@ -382,6 +383,7 @@
       res.tide = TIDE.daySummary(spot.tide, date);
       res.dayMaxWave = R.maxOf(bundle.hours[date].map(function (h) { return h.wave; }));
       res.official = official && official.days[date] ? official.days[date] : null;
+      res.yahoo = spot.yahoo && FF.yahoo ? FF.yahoo.day(spot.yahoo, date) : null;
       res.conflicts = R.findConflicts(res);
       return res;
     });
@@ -1109,7 +1111,7 @@
     if (!jma) return null;
 
     var card = el('div', 'card');
-    card.appendChild(el('h2', null, '気象庁の公式予報（第2の意見）'));
+    card.appendChild(el('h2', null, '他の予報との突き合わせ（気象庁・Yahoo天気）'));
 
     var lead = el('div', 'sub');
     lead.innerHTML = esc(jma.office || '気象庁') + ' 発表' +
@@ -1136,6 +1138,7 @@
     }
 
     // --- 日別の突き合わせ表
+    var hasYahoo = results.some(function (r) { return r.yahoo; });
     var rows = results.map(function (r) {
       var o = r.official;
       if (!o) return '';
@@ -1143,12 +1146,19 @@
         ? '<span class="badge ' + RELIABILITY_CLASS[o.reliability] + '" title="' +
           esc(FF.jma.RELIABILITY_NOTE[o.reliability] || '') + '">' + o.reliability + '</span>'
         : '<span class="muted">—</span>';
+      var y = r.yahoo;
+      var yahooCells = hasYahoo
+        ? '<td style="text-align:left">' +
+            (y ? FF.yahoo.icon(y.weather) + ' ' + esc(y.weather || '—') : '<span class="muted">—</span>') + '</td>' +
+          '<td>' + (y && isNum(y.pop) ? y.pop + '%' : '—') + '</td>'
+        : '';
       return '<tr>' +
         '<td>' + esc(dateLabel(r.date)) + '</td>' +
         '<td style="text-align:left">' + FF.jma.icon(o.weatherCode) + ' ' + esc(o.weather || '—') + '</td>' +
         '<td style="text-align:left">' + esc(o.wind || '—') + '</td>' +
         '<td style="text-align:left">' + esc(o.wave || '—') + '</td>' +
         '<td>' + (isNum(r.dayMaxWave) ? fmt(r.dayMaxWave, 2) + ' m' : '—') + '</td>' +
+        yahooCells +
         '<td>' + (isNum(o.pop) ? o.pop + '%' : '—') + '</td>' +
         '<td>' + (isNum(r.daily.precipMax) ? r.daily.precipMax + '%' : '—') + '</td>' +
         '<td>' + rel + '</td>' +
@@ -1165,7 +1175,9 @@
       '<th style="text-align:left">気象庁 天気</th>' +
       '<th style="text-align:left">気象庁 風</th>' +
       '<th style="text-align:left">気象庁 沿岸の波</th>' +
-      '<th>モデル波高</th><th>気象庁 降水</th><th>モデル降水</th>' +
+      '<th>モデル波高</th>' +
+      (hasYahoo ? '<th style="text-align:left">Yahoo 天気</th><th>Yahoo 降水</th>' : '') +
+      '<th>気象庁 降水</th><th>モデル降水</th>' +
       '<th>気象庁 確度</th><th>モデル一致度</th>' +
       '</tr></thead><tbody>' + rows + '</tbody></table>';
     card.appendChild(wrap);
@@ -1174,6 +1186,15 @@
       '気象庁の風・波・天気は3日先まで、週間（7日）は天気・降水確率・確度のみ。8日目以降は出ません。',
       '確度 A=高い / B=やや高い / C=低い。C の日は予報が変わりやすいので直前に見直してください。'
     ];
+    if (hasYahoo) {
+      var yp = FF.yahoo.point(SPOTS[0].yahoo);
+      var cov = FF.yahoo.coverage(SPOTS[0].yahoo);
+      noteBits.push('Yahoo天気は' + (yp ? yp.name : '') +'の週間予報（明後日から6日分）。' +
+        (yp && yp.announced ? yp.announced.slice(5, 16).replace('T', ' ') + ' 発表、' : '') +
+        '取得 ' + (FF.yahoo.fetchedAt() || '—').slice(5, 16).replace('T', ' ') + '。' +
+        (cov ? cov.first.slice(5) + '〜' + cov.last.slice(5) + 'の' + cov.count + '日分。' : '') +
+        '信頼度A〜Cと7日目以降はスマホアプリにしか無いため取得していません。');
+    }
     if (jma.weeklyAreaName) {
       noteBits.push('週間予報と確度は' + jma.weeklyAreaName + '全体の値です（3日先までは' +
         (results[0] && results[0].official && results[0].official.areaName ?
@@ -1186,7 +1207,7 @@
     if (conflicts.length) {
       var n = el('div', 'notice warn');
       n.style.marginTop = '10px';
-      n.innerHTML = '<b>気象庁の予報と食い違っている日</b><ul class="reasons">' +
+      n.innerHTML = '<b>他の予報と食い違っている日</b><ul class="reasons">' +
         conflicts.map(function (r) {
           return r.conflicts.map(function (c) {
             return '<li>' + esc(dateLabel(r.date)) + '：' + esc(c.text) + '</li>';
@@ -1200,12 +1221,12 @@
 
   function yahooLinks() {
     var d = el('div', 'muted');
-    d.innerHTML = '現地でよく当たると言われる Yahoo天気で確かめる： ' +
+    d.innerHTML = '原典をYahoo天気で確かめる： ' +
       YAHOO_LINKS.map(function (l) {
         return '<a href="' + l.url + '" target="_blank" rel="noopener">' + esc(l.label) + '</a>';
       }).join(' ／ ') +
-      '<br>Yahoo天気には予報の公開APIが無く、ページの自動取得は利用規約に反するため、' +
-      'アプリでは上流の気象庁の予報を直接使っています。';
+      '<br>アプリが取り込んでいるのはYahoo天気の週間予報（明後日から6日分）の天気・気温・降水確率です。' +
+      '信頼度A〜Cと7日目以降はスマホアプリの中にしかないため、確度は気象庁の公式値（A/B/C・7日）を出しています。';
     return d;
   }
 
