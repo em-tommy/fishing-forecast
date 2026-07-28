@@ -1,0 +1,47 @@
+name: Refresh JMA tide data
+
+# 気象庁の潮位表は年単位で公表される。翌年分は年明けに出るため、
+# 毎月1回まわして「出ていたら取り込む」方式にしておけば年またぎで表示が切れない。
+on:
+  schedule:
+    - cron: '0 20 5 * *' # 毎月6日 05:00 JST
+  workflow_dispatch:
+    inputs:
+      year:
+        description: '取得する年（空なら今年と来年）'
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build tide data
+        shell: pwsh
+        run: |
+          $y = '${{ github.event.inputs.year }}'
+          if ($y) {
+            ./tools/Build-Tide.ps1 -Year ([int]$y)
+          } else {
+            $now = (Get-Date).ToUniversalTime().AddHours(9).Year
+            ./tools/Build-Tide.ps1 -Year $now
+            # 翌年分はまだ公表されていないことがあるので、無ければ黙って飛ばす
+            ./tools/Build-Tide.ps1 -Year ($now + 1) -AllowMissing
+          }
+
+      - name: Commit if changed
+        shell: bash
+        run: |
+          if [ -z "$(git status --porcelain data index.html tests.html)" ]; then
+            echo "変更なし"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add data index.html tests.html
+          git commit -m '潮汐データを更新（気象庁 潮位表）'
+          git push

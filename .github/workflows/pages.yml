@@ -1,0 +1,43 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # 潮汐データが同梱されていないとアプリが動かないので、公開前に必ず確認する
+      - name: Check bundled tide data
+        shell: bash
+        run: |
+          shopt -s nullglob
+          files=(data/tide-*.js)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "data/tide-YYYY.js がありません。tools/Build-Tide.ps1 を実行してコミットしてください。" >&2
+            exit 1
+          fi
+          echo "found: ${files[*]}"
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+      - id: deployment
+        uses: actions/deploy-pages@v4

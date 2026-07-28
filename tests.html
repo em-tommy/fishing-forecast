@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>fishing-forecast tests</title>
+<style>
+  body { font-family: ui-monospace, Consolas, monospace; padding: 1rem; line-height: 1.5; }
+  .pass { color: #157f3b; }
+  .fail { color: #c0392b; font-weight: bold; }
+  h2 { margin: 1.2rem 0 .3rem; font-size: 1rem; border-bottom: 1px solid #ccc; }
+  #summary { font-size: 1.1rem; font-weight: bold; margin-bottom: 1rem; }
+</style>
+</head>
+<body>
+<div id="summary">running...</div>
+<div id="out"></div>
+
+<!-- tide-data:start / rewritten by tools/Build-Tide.ps1 -->
+<script src="data/tide-2026.js"></script>
+<!-- tide-data:end -->
+<script src="assets/tide.js"></script>
+<script src="assets/rating.js"></script>
+<script>
+(function () {
+  var out = document.getElementById('out');
+  var passed = 0, failed = 0;
+
+  function section(name) {
+    var h = document.createElement('h2');
+    h.textContent = name;
+    out.appendChild(h);
+  }
+  function log(ok, msg, detail) {
+    var d = document.createElement('div');
+    d.className = ok ? 'pass' : 'fail';
+    d.textContent = (ok ? 'PASS  ' : 'FAIL  ') + msg + (detail ? '   [' + detail + ']' : '');
+    out.appendChild(d);
+    if (ok) passed++; else failed++;
+  }
+  function eq(actual, expected, msg) {
+    var ok = actual === expected;
+    log(ok, msg, ok ? '' : 'expected=' + expected + ' actual=' + actual);
+  }
+  function near(actual, expected, tol, msg) {
+    var ok = typeof actual === 'number' && Math.abs(actual - expected) <= tol;
+    log(ok, msg, ok ? '' : 'expected~' + expected + '+-' + tol + ' actual=' + actual);
+  }
+  function ok(cond, msg, detail) { log(!!cond, msg, cond ? '' : (detail || '')); }
+
+  var R = FF.rating;
+  var T = FF.tide;
+
+  // ---------------------------------------------------------------- helpers
+
+  var MODELS = ['ecmwf_ifs025', 'gfs_seamless', 'icon_seamless', 'jma_seamless'];
+
+  function spread(value, models) {
+    var o = {};
+    (models || MODELS).forEach(function (m) { o[m] = value; });
+    return o;
+  }
+
+  /** 全時刻が同一条件の合成日をつくる。個別の時刻は override で差し替える。 */
+  function makeDay(cfg) {
+    var hours = [];
+    for (var h = 0; h < 24; h++) {
+      hours.push({
+        hour: h,
+        wind: spread(cfg.wind),
+        gust: spread(cfg.gust),
+        dir: spread(cfg.dir === undefined ? 180 : cfg.dir),
+        wave: cfg.wave === undefined ? 0.1 : cfg.wave,
+        swellHeight: cfg.swellHeight === undefined ? 0.05 : cfg.swellHeight,
+        swellPeriod: cfg.swellPeriod === undefined ? 4 : cfg.swellPeriod,
+        precipProb: 0,
+        weatherCode: cfg.weatherCode === undefined ? 1 : cfg.weatherCode
+      });
+    }
+    if (cfg.override) cfg.override(hours);
+    return { date: cfg.date || '2026-08-01', sunrise: cfg.sunrise === undefined ? 5 : cfg.sunrise, hours: hours };
+  }
+
+  // ---------------------------------------------------------------- levelFor
+
+  section('levelFor の境界値（風 good=4 fair=6 / 波 good=0.30 fair=0.50）');
+  eq(R.levelFor(4.0, 4, 6), 3, '風 4.0 は ◎');
+  eq(R.levelFor(4.1, 4, 6), 2, '風 4.1 は ○');
+  eq(R.levelFor(5.0, 4, 6), 2, '風 5.0 は ○（◎と△の中点）');
+  eq(R.levelFor(5.01, 4, 6), 1, '風 5.01 は △');
+  eq(R.levelFor(6.0, 4, 6), 1, '風 6.0 は △');
+  eq(R.levelFor(6.01, 4, 6), 0, '風 6.01 は ×');
+  eq(R.levelFor(0.30, 0.30, 0.50), 3, '波 0.30 は ◎');
+  eq(R.levelFor(0.31, 0.30, 0.50), 2, '波 0.31 は ○');
+  eq(R.levelFor(0.41, 0.30, 0.50), 1, '波 0.41 は △');
+  eq(R.levelFor(0.51, 0.30, 0.50), 0, '波 0.51 は ×');
+  eq(R.levelFor(null, 4, 6), null, '値なしは null（その指標では判定しない）');
+
+  // ---------------------------------------------------------------- 統計
+
+  section('欠損混じりの統計');
+  eq(R.median([3, 1, 2]), 2, '中央値（奇数個）');
+  eq(R.median([1, 2, 3, 4]), 2.5, '中央値（偶数個）');
+  eq(R.median([3, null, 1, undefined, 2]), 2, 'null/undefined を除外して中央値');
+  eq(R.median([null, null]), null, '全欠損なら null');
+  eq(R.median([5, NaN]), 5, 'NaN を除外');
+  eq(R.stdev([2]), null, '有効値1個では標準偏差を出さない');
+  near(R.stdev([2, 4]), 1, 1e-9, '標準偏差（母集団）');
+  eq(R.maxOf([1, null, 9, 3]), 9, '最大値は null を無視');
+  eq(R.maxOf([null]), null, '全欠損の最大値は null');
+
+  section('風向は循環量として扱う');
+  near(R.circularMeanDeg([350, 10]), 0, 0.001, '350°と10°の平均は0°（180°ではない）');
+  near(R.circularMeanDeg([80, 100]), 90, 0.001, '80°と100°の平均は90°');
+  eq(R.circularMeanDeg([null, null]), null, '全欠損は null');
+  ok(R.inDirRange(350, 292.5, 67.5), '0°をまたぐレンジ: 350° は内側');
+  ok(R.inDirRange(10, 292.5, 67.5), '0°をまたぐレンジ: 10° は内側');
+  ok(!R.inDirRange(180, 292.5, 67.5), '0°をまたぐレンジ: 180° は外側');
+  ok(R.inDirRange(180, 112.5, 247.5), '通常レンジ: 180° は内側');
+  eq(R.dirName(0), '北', '0° は北');
+  eq(R.dirName(315), '北西', '315° は北西');
+  eq(R.dirName(180), '南', '180° は南');
+
+  // ---------------------------------------------------------------- 日別評価
+
+  section('evaluateDay: 基本判定');
+  var calm = R.evaluateDay(makeDay({ wind: 2.0, gust: 4.0, wave: 0.15 }));
+  eq(calm.grade, 3, '無風・凪 → ◎');
+  eq(calm.gradeInfo.symbol, '◎', '記号も ◎');
+
+  var blowing = R.evaluateDay(makeDay({ wind: 8.0, gust: 12.0, wave: 0.9 }));
+  eq(blowing.grade, 0, '強風・高波 → ×');
+
+  var worstWins = R.evaluateDay(makeDay({ wind: 2.0, gust: 4.0, wave: 0.9 }));
+  eq(worstWins.grade, 0, '風が穏やかでも波が高ければ × （最悪値で決まる）');
+
+  section('evaluateDay: 判定窓は朝マヅメ帯だけ');
+  var pmOnly = R.evaluateDay(makeDay({
+    wind: 2.0, gust: 4.0, wave: 0.1,
+    sunrise: 5,
+    override: function (hours) {
+      for (var h = 12; h < 20; h++) { hours[h].wind = spread(15); hours[h].wave = 2.0; }
+    }
+  }));
+  ok(pmOnly.grade === 3, '午後だけ荒れても朝マヅメ帯の判定は ◎ のまま', 'grade=' + pmOnly.grade);
+  ok(pmOnly.flags.indexOf('afternoonBuildup') >= 0, '午後の吹き上がりは警告として出る');
+  eq(pmOnly.metrics.maxAfternoonWind, 15, '午後の最大風速を記録');
+
+  var windowCheck = R.evaluateDay(makeDay({ wind: 2, gust: 3, sunrise: 5 }));
+  eq(windowCheck.window.from, 4, '判定窓の開始は日の出-1時間');
+  eq(windowCheck.window.to, 9, '判定窓の終了は日の出+4時間');
+
+  section('evaluateDay: うねり補正');
+  var swell = R.evaluateDay(makeDay({
+    wind: 2.0, gust: 4.0, wave: 0.25, swellHeight: 0.25, swellPeriod: 9
+  }));
+  eq(swell.grade, 2, '長周期うねり（9s / 0.25m）で ◎ から1段階格下げ');
+  ok(swell.flags.indexOf('longSwell') >= 0, 'longSwell フラグが立つ');
+
+  var shortSwell = R.evaluateDay(makeDay({
+    wind: 2.0, gust: 4.0, wave: 0.25, swellHeight: 0.25, swellPeriod: 6
+  }));
+  eq(shortSwell.grade, 3, '周期が短ければ格下げしない');
+
+  var tinySwell = R.evaluateDay(makeDay({
+    wind: 2.0, gust: 4.0, wave: 0.25, swellHeight: 0.1, swellPeriod: 12
+  }));
+  eq(tinySwell.grade, 3, '周期が長くても高さが無ければ格下げしない');
+
+  section('evaluateDay: 風向');
+  var onshore = R.evaluateDay(makeDay({ wind: 3.5, gust: 5.0, wave: 0.2, dir: 315 }));
+  eq(onshore.grade, 2, '北西の吹き付け風で1段階格下げ');
+  ok(onshore.flags.indexOf('onshore') >= 0, 'onshore フラグ');
+
+  var weakOnshore = R.evaluateDay(makeDay({ wind: 1.5, gust: 3.0, wave: 0.1, dir: 315 }));
+  eq(weakOnshore.grade, 3, '風が弱ければ（3m/s未満）向きは問わない');
+
+  var offshore = R.evaluateDay(makeDay({ wind: 3.5, gust: 5.0, wave: 0.2, dir: 180 }));
+  eq(offshore.grade, 3, '南の陸風は判定を下げない');
+  ok(offshore.flags.indexOf('offshore') >= 0, 'offshore は警告フラグのみ');
+
+  var noDirCheck = R.evaluateDay(
+    makeDay({ wind: 3.5, gust: 5.0, wave: 0.2, dir: 315 }), null, { checkDirection: false }
+  );
+  eq(noDirCheck.grade, 3, '陸っぱりモードでは風向ペナルティを適用しない');
+
+  section('evaluateDay: 荒天');
+  var thunder = R.evaluateDay(makeDay({ wind: 1.0, gust: 2.0, wave: 0.05, weatherCode: 95 }));
+  eq(thunder.grade, 0, '雷予報は風も波も穏やかでも × にする');
+  ok(thunder.flags.indexOf('thunder') >= 0, 'thunder フラグ');
+
+  var heavyRain = R.evaluateDay(makeDay({ wind: 1.0, gust: 2.0, wave: 0.05, weatherCode: 65 }));
+  eq(heavyRain.grade, 2, '強い雨は1段階格下げ（◎→○）');
+  ok(heavyRain.flags.indexOf('heavyRain') >= 0, 'heavyRain フラグ');
+
+  var lightRain = R.evaluateDay(makeDay({ wind: 1.0, gust: 2.0, wave: 0.05, weatherCode: 61 }));
+  eq(lightRain.grade, 3, '弱い雨では格下げしない');
+
+  var afternoonThunder = R.evaluateDay(makeDay({
+    wind: 1.0, gust: 2.0, wave: 0.05, sunrise: 5,
+    override: function (hours) { for (var h = 13; h < 18; h++) hours[h].weatherCode = 95; }
+  }));
+  eq(afternoonThunder.grade, 3, '午後だけの雷は朝マヅメ判定を下げない');
+
+  section('evaluateDay: 9日目以降（波高データなし）');
+  var windOnly = R.evaluateDay(makeDay({ wind: 3.0, gust: 5.0, wave: null, swellHeight: null, swellPeriod: null }));
+  eq(windOnly.grade, 2, '波高が無い日は ◎ を名乗れず ○ 止まり');
+  ok(windOnly.flags.indexOf('windOnly') >= 0, 'windOnly フラグで暫定判定と分かる');
+  eq(windOnly.metrics.maxWave, null, '波高は null のまま（無いものを作らない）');
+
+  var windOnlyBad = R.evaluateDay(makeDay({ wind: 9.0, gust: 14.0, wave: null }));
+  eq(windOnlyBad.grade, 0, '波高が無くても強風なら × にはできる（上限だけを抑える）');
+
+  var noData = R.evaluateDay(makeDay({ wind: null, gust: null, wave: null }));
+  eq(noData.grade, null, '全欠損なら grade は null');
+  eq(noData.gradeInfo.label, 'データなし', 'データなし表示');
+
+  section('evaluateDay: モデル一致度');
+  var agree = R.evaluateDay(makeDay({ wind: 3, gust: 5, wave: 0.2 }));
+  eq(agree.confidence.level, 'high', '全モデル一致 → 信頼度 高');
+
+  var disagree = R.evaluateDay(makeDay({
+    wind: 3, gust: 5, wave: 0.2,
+    override: function (hours) {
+      hours.forEach(function (r) {
+        r.wind = { ecmwf_ifs025: 1, gfs_seamless: 3, icon_seamless: 6, jma_seamless: 9 };
+      });
+    }
+  }));
+  eq(disagree.confidence.level, 'low', 'モデルがばらつく → 信頼度 低');
+
+  var jmaGustNull = R.evaluateDay(makeDay({
+    wind: 3, gust: 5, wave: 0.2,
+    override: function (hours) {
+      hours.forEach(function (r) { r.gust.jma_seamless = null; });
+    }
+  }));
+  eq(jmaGustNull.metrics.maxGust, 5, 'JMA の突風が null でも他モデルから中央値を出す');
+
+  // ---------------------------------------------------------------- 連続凪
+
+  section('findCalmWindows');
+  function fake(date, grade, flags) {
+    return { date: date, grade: grade, flags: flags || [] };
+  }
+  var wins = R.findCalmWindows([
+    fake('2026-08-01', 3), fake('2026-08-02', 3), fake('2026-08-03', 0),
+    fake('2026-08-04', 2), fake('2026-08-05', 1), fake('2026-08-06', 2),
+    fake('2026-08-07', 2), fake('2026-08-08', 2)
+  ]);
+  eq(wins.length, 2, '2日以上連続する区間が2つ');
+  eq(wins[0].start, '2026-08-01', '最良の窓が先頭（minGrade が高い順）');
+  eq(wins[0].length, 2, '8/1-8/2 は2日連続');
+  eq(wins[1].start, '2026-08-06', '次点は 8/6 からの3日');
+  eq(wins[1].length, 3, '8/6-8/8 は3日連続');
+
+  var single = R.findCalmWindows([fake('2026-08-01', 3), fake('2026-08-02', 0)]);
+  eq(single.length, 0, '単日は連続窓として扱わない');
+
+  var windOnlyWin = R.findCalmWindows([
+    fake('2026-08-10', 3, ['windOnly']), fake('2026-08-11', 3, ['windOnly'])
+  ]);
+  eq(windOnlyWin[0].windOnly, true, '全日が波高なしなら窓にも windOnly が立つ');
+
+  // 制約が1つ欠けているだけの窓が、実測で凪と分かっている窓より上に来てはいけない
+  var mixed = R.findCalmWindows([
+    fake('2026-08-01', 2), fake('2026-08-02', 2), fake('2026-08-03', 0),
+    fake('2026-08-09', 3, ['windOnly']), fake('2026-08-10', 3, ['windOnly'])
+  ]);
+  eq(mixed[0].start, '2026-08-01', '波高データのある窓を、grade が高い風のみ窓より先に並べる');
+  eq(mixed[1].start, '2026-08-09', '風のみの窓は後ろ');
+
+  // ---------------------------------------------------------------- 潮汐
+
+  section('潮汐データ（気象庁 実データとの突合）');
+  var qs = T.daySummary('QS', '2026-01-01');
+  ok(!!qs, '横浜 2026-01-01 のデータが存在する');
+  eq(qs.highs.length, 2, '満潮2回');
+  eq(qs.highs[0].time, '04:08', '第1満潮 04:08');
+  eq(qs.highs[0].level, 163, '第1満潮 163cm');
+  eq(qs.highs[1].time, '14:08', '第2満潮 14:08');
+  eq(qs.highs[1].level, 169, '第2満潮 169cm');
+  eq(qs.lows[0].time, '08:58', '第1干潮 08:58');
+  eq(qs.lows[0].level, 123, '第1干潮 123cm');
+  eq(qs.lows[1].time, '21:32', '第2干潮 21:32');
+  eq(qs.lows[1].level, 1, '第2干潮 1cm');
+  eq(qs.hourly.length, 24, '毎時値は24個');
+  eq(qs.max, 169, '毎時値の最大が第2満潮と一致');
+
+  var tk = T.daySummary('TK', '2026-07-28');
+  ok(!!tk, '東京 2026-07-28 のデータが存在する');
+  eq(tk.name, '東京', '表示名は app 側の定義から引く');
+
+  var t3 = T.daySummary('T3', '2026-07-28');
+  eq(t3.name, '直江津', '直江津の表示名');
+  ok(t3.range < 60, '直江津の潮差は日本海側らしく小さい（<60cm）', 'range=' + t3.range);
+  var qs728 = T.daySummary('QS', '2026-07-28');
+  ok(qs728.range > 100, '同じ日の横浜は潮差が大きい（>100cm）', 'range=' + qs728.range);
+  ok(t3.range < qs728.range / 2, '直江津の潮差は横浜の半分未満');
+
+  ok(T.daySummary('QS', '2030-01-01') === null, '範囲外の日付は null を返す');
+  ok(T.daySummary('XX', '2026-01-01') === null, '未知の地点は null を返す');
+
+  var cov = T.coverage('QS');
+  eq(cov.count, 365, '横浜は365日分');
+  eq(cov.first, '2026-01-01', '開始日');
+  eq(cov.last, '2026-12-31', '終了日');
+
+  section('潮位の補間');
+  eq(Math.round(T.levelAt('QS', '2026-01-01', 0)), qs.hourly[0], '整数時ちょうどは毎時値と一致');
+  eq(Math.round(T.levelAt('QS', '2026-01-01', 5)), qs.hourly[5], '5時も毎時値と一致');
+  var mid = T.levelAt('QS', '2026-01-01', 0.5);
+  ok(mid > Math.min(qs.hourly[0], qs.hourly[1]) && mid < Math.max(qs.hourly[0], qs.hourly[1]),
+    '0.5時は0時と1時の間に入る', 'mid=' + mid);
+  var lastHour = T.levelAt('QS', '2026-12-31', 23.5);
+  ok(lastHour !== null, '年末最終日でも補間が落ちない（翌日が無い場合の処理）');
+
+  section('潮回りと潮差の整合（月齢計算の実データ検証）');
+  var byPhase = {};
+  var keys = Object.keys(TIDE_DATA.stations.QS.days);
+  keys.forEach(function (k) {
+    var s = T.daySummary('QS', k);
+    (byPhase[s.phase] = byPhase[s.phase] || []).push(s.range);
+  });
+  function mean(a) { return a.reduce(function (x, y) { return x + y; }, 0) / a.length; }
+  var big = mean(byPhase['大潮']), mid2 = mean(byPhase['中潮']), small = mean(byPhase['小潮']);
+  ok(big > mid2, '大潮の平均潮差 > 中潮', Math.round(big) + ' vs ' + Math.round(mid2));
+  ok(mid2 > small, '中潮の平均潮差 > 小潮', Math.round(mid2) + ' vs ' + Math.round(small));
+  ok(big > small * 1.5, '大潮は小潮の1.5倍以上の潮差',
+    Math.round(big) + ' vs ' + Math.round(small));
+  ok(byPhase['長潮'] && byPhase['若潮'], '長潮・若潮も出現する');
+
+  section('潮汐の向きと転流');
+  var trend = T.tideTrend('QS', '2026-01-01', 4.13, 8.97); // 満潮 -> 干潮
+  eq(trend, '下げ', '満潮から干潮へは下げ潮');
+  var trend2 = T.tideTrend('QS', '2026-01-01', 8.97, 14.13); // 干潮 -> 満潮
+  eq(trend2, '上げ', '干潮から満潮へは上げ潮');
+  var ex = T.extremesInWindow(qs, 4, 9);
+  eq(ex.length, 2, '4〜9時の窓に満潮1・干潮1が入る');
+  eq(ex[0].kind, '満潮', '先に満潮');
+  eq(ex[1].kind, '干潮', '次に干潮');
+
+  section('日付ユーティリティ');
+  eq(T.dateKey(new Date(2026, 6, 28)), '2026-07-28', 'dateKey はローカル日付');
+  eq(T.shiftDateKey('2026-12-31', 1), '2027-01-01', '年またぎのシフト');
+  eq(T.shiftDateKey('2026-03-01', -1), '2026-02-28', '月またぎのシフト');
+
+  // ---------------------------------------------------------------- 集計
+
+  var s = document.getElementById('summary');
+  s.textContent = 'RESULT: ' + passed + ' passed, ' + failed + ' failed';
+  s.className = failed ? 'fail' : 'pass';
+  document.title = failed ? 'TESTS FAILED' : 'TESTS PASSED';
+})();
+</script>
+</body>
+</html>

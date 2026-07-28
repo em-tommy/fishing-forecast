@@ -1,0 +1,3 @@
+# 潮汐データは Windows でも GitHub Actions(Linux) でも生成するため、
+# 改行を LF に統一しておかないと中身が同じでも差分として出てしまう。
+* text=auto eol=lf
