@@ -86,11 +86,15 @@
    * 気象庁の波の予報文から最大波高(m)を取り出す。
    * 「０．５メートル 後 １．５メートル」→ 1.5
    * 予報区内の代表的な値なので、釣り場ピンポイントの値ではないことに注意。
+   *
+   * tidy() を通した後の文字列（「0.5m 後 1.5m」）も受け取れるようにしてある。
+   * 表示用に単位を短くしても解析側が壊れないようにするため。
+   * m の直後に英字が続くものは拾わない（mm などを誤って読まないように）。
    */
   function parseWaveMeters(text) {
     if (!text) return null;
     var t = toHalfWidth(text);
-    var m = t.match(/(\d+(?:\.\d+)?)\s*メートル/g);
+    var m = t.match(/(\d+(?:\.\d+)?)\s*(?:メートル|m(?![a-zA-Z]))/g);
     if (!m) return null;
     var vals = m.map(function (x) { return parseFloat(x); }).filter(function (v) { return isFinite(v); });
     return vals.length ? Math.max.apply(null, vals) : null;
@@ -98,11 +102,15 @@
 
   /**
    * 予報文を読みやすく整形する。
-   * 気象庁は語の区切りに全角スペース、数値に全角数字を使う（例「０．５メートル」）。
-   * アプリの他の数値はすべて半角なので、混ざると読みにくいのでそろえる。
+   * 気象庁は語の区切りに全角スペース、数値に全角数字、単位に「メートル」を使う
+   * （例「０．５メートル　後　１．５メートル」→「0.5m 後 1.5m」）。
+   * 表の他の数値はすべて半角＋m なので、混ざると狭い画面で読みにくい。
    */
   function tidy(text) {
-    return toHalfWidth(String(text || '')).replace(/ +/g, ' ').trim();
+    return toHalfWidth(String(text || ''))
+      .replace(/メートル/g, 'm')
+      .replace(/ +/g, ' ')
+      .trim();
   }
 
   function dayKey(iso) {

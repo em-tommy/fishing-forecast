@@ -336,6 +336,19 @@ thead th { color: var(--text-muted); font-weight: 600; border-bottom-color: var(
 tbody tr:hover { background: var(--surface-sunk); }
 td .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
 
+/* 横スクロールする表は左端（日付・釣り場）を貼り付けて、右へ送っても行を見失わないようにする。
+   背景は必ず不透明にすること。透けるとスクロールした中身が下に覗いてしまう。 */
+.tbl-wrap table th:first-child,
+.tbl-wrap table td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--surface-1);
+  box-shadow: 1px 0 0 var(--grid);
+}
+.tbl-wrap table thead th:first-child { z-index: 3; }
+.tbl-wrap table tbody tr:hover td:first-child { background: var(--surface-sunk); }
+
 /* ---------------------------------------------------------------- 根拠リスト */
 
 ul.reasons { margin: 8px 0 0; padding-left: 1.1em; font-size: .84rem; color: var(--text-secondary); }
