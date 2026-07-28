@@ -257,6 +257,23 @@ section[hidden] { display: none; }
 .day .v { font-size: .7rem; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 .day .dot { font-size: .62rem; color: var(--text-muted); }
 
+/* 天気マークと降水確率。屋外で一目で拾えるようマークは大きめに取る */
+.day .wx {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  margin: 1px 0 2px;
+  line-height: 1.1;
+}
+.day .wx .ico { font-size: 1.15rem; }
+.day .wx .pop {
+  font-size: .72rem;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.day .wx .pop.wet { color: var(--critical); font-weight: 600; }
+
 /* ---------------------------------------------------------------- チャート */
 
 .chart-wrap { overflow-x: auto; }

@@ -23,17 +23,35 @@
     { id: 'jma_seamless', label: 'JMA', color: 'var(--s4)' }
   ];
 
+  // Open-Meteo は「変数 × 日数 × モデル」で重み付けしてレート制限する。
+  // 4モデル16日を6地点ぶん一度に投げると 429 が返るため、モデル比較画面を持つ直江津以外は
+  // 3モデルに絞る。ICON を落として GFS を残すのは、16日目まで値があるのが GFS だけで、
+  // 外すと最終日が「データなし」になってしまうため。
+  var MODELS_LITE = [MODELS[0], MODELS[1], MODELS[3]];
+
+  function modelsFor(spot) {
+    return spot.kind === 'boat' ? MODELS : MODELS_LITE;
+  }
+
   var SPOTS = [
     {
       id: 'naoetsu', name: '直江津 第三堤防沖', short: '直江津', kind: 'boat',
       lat: 37.219960, lon: 138.278409, tide: 'T3',
+      jma: { pref: '150000', area: '150030' }, // 新潟県 / 上越
       target: '尺アジ・マダイ・青物'
     },
-    { id: 'wakasu', name: '若洲海浜公園', short: '若洲', kind: 'shore', lat: 35.618, lon: 139.822, tide: 'TK', target: 'アジ・タコ' },
-    { id: 'ogishima', name: '東扇島西公園', short: '東扇島西', kind: 'shore', lat: 35.494, lon: 139.757, tide: 'QS', target: 'アジ・タコ' },
-    { id: 'fureyu', name: 'ふれーゆ裏', short: 'ふれーゆ裏', kind: 'shore', lat: 35.475, lon: 139.700, tide: 'QS', target: 'アジ・タコ' },
-    { id: 'daikoku', name: '大黒ふ頭海釣り施設', short: '大黒ふ頭', kind: 'shore', lat: 35.463, lon: 139.679, tide: 'QS', target: 'アジ・タコ' },
-    { id: 'honmoku', name: '本牧海づり施設', short: '本牧', kind: 'shore', lat: 35.418, lon: 139.668, tide: 'QS', target: 'アジ・タコ' }
+    { id: 'wakasu', name: '若洲海浜公園', short: '若洲', kind: 'shore', lat: 35.618, lon: 139.822, tide: 'TK', jma: { pref: '130000', area: '130010' }, target: 'アジ・タコ' },
+    { id: 'ogishima', name: '東扇島西公園', short: '東扇島西', kind: 'shore', lat: 35.494, lon: 139.757, tide: 'QS', jma: { pref: '140000', area: '140010' }, target: 'アジ・タコ' },
+    { id: 'fureyu', name: 'ふれーゆ裏', short: 'ふれーゆ裏', kind: 'shore', lat: 35.475, lon: 139.700, tide: 'QS', jma: { pref: '140000', area: '140010' }, target: 'アジ・タコ' },
+    { id: 'daikoku', name: '大黒ふ頭海釣り施設', short: '大黒ふ頭', kind: 'shore', lat: 35.463, lon: 139.679, tide: 'QS', jma: { pref: '140000', area: '140010' }, target: 'アジ・タコ' },
+    { id: 'honmoku', name: '本牧海づり施設', short: '本牧', kind: 'shore', lat: 35.418, lon: 139.668, tide: 'QS', jma: { pref: '140000', area: '140010' }, target: 'アジ・タコ' }
+  ];
+
+  // 現地で「よく当たる」と言われる Yahoo天気は、日本気象協会経由で気象庁の予報を配信している。
+  // アプリからは上流の気象庁を直接使うが、いつもの画面で確かめたいはずなのでリンクも置く。
+  var YAHOO_LINKS = [
+    { label: '上越市', url: 'https://weather.yahoo.co.jp/weather/jp/15/5430/15222.html' },
+    { label: '津南町', url: 'https://weather.yahoo.co.jp/weather/jp/15/5420/15482.html' }
   ];
 
   var WMO = {
@@ -136,6 +154,43 @@
    * キャッシュ付き fetch。取得に失敗したら期限切れキャッシュでもよいので返す
    * （港でのオフライン時に何も出ないより、古いと明示して出すほうが有用）。
    */
+  function delay(ms) {
+    return new Promise(function (r) { setTimeout(r, ms); });
+  }
+
+  /**
+   * 同時実行数を絞って順に流す。
+   * Open-Meteo は「変数 × 日数 × モデル」で重み付けしてレート制限するため、
+   * 全地点ぶんを一度に投げると 429 が返る。
+   */
+  function throttled(tasks, concurrency) {
+    var results = new Array(tasks.length);
+    var next = 0;
+    function worker() {
+      if (next >= tasks.length) return Promise.resolve();
+      var i = next++;
+      return Promise.resolve(tasks[i]()).then(function (v) {
+        results[i] = v;
+        return worker();
+      });
+    }
+    var workers = [];
+    for (var w = 0; w < Math.min(concurrency, tasks.length); w++) workers.push(worker());
+    return Promise.all(workers).then(function () { return results; });
+  }
+
+  function fetchOnce(url) {
+    return fetch(url, { mode: 'cors' }).then(function (res) {
+      if (res.status === 429) {
+        var e = new Error('レート制限（429）');
+        e.retryable = true;
+        throw e;
+      }
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return res.json();
+    });
+  }
+
   function fetchJson(url) {
     var key = CACHE_PREFIX + url;
     var cached = store.get(key, null);
@@ -143,10 +198,11 @@
     if (cached && now - cached.t < CACHE_TTL_MS) {
       return Promise.resolve({ json: cached.json, at: cached.t, fromCache: true });
     }
-    return fetch(url, { mode: 'cors' })
-      .then(function (res) {
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        return res.json();
+    return fetchOnce(url)
+      .catch(function (err) {
+        // 429 は少し待てば通ることが多いので1度だけやり直す
+        if (!err || !err.retryable) throw err;
+        return delay(2500).then(function () { return fetchOnce(url); });
       })
       .then(function (json) {
         if (json && json.error) throw new Error(json.reason || 'API error');
@@ -163,7 +219,7 @@
     return 'https://api.open-meteo.com/v1/forecast' +
       '?latitude=' + spot.lat + '&longitude=' + spot.lon +
       '&hourly=wind_speed_10m,wind_gusts_10m,wind_direction_10m' +
-      '&models=' + MODELS.map(function (m) { return m.id; }).join(',') +
+      '&models=' + modelsFor(spot).map(function (m) { return m.id; }).join(',') +
       '&timezone=Asia%2FTokyo&forecast_days=16&wind_speed_unit=ms';
   }
 
@@ -222,11 +278,12 @@
     }
 
     // --- モデル別の風
+    var useModels = modelsFor(spot);
     var mh = models.hourly;
     for (var i = 0; i < mh.time.length; i++) {
       var st = splitStamp(mh.time[i]);
       var rec = slot(st.date, st.hour);
-      MODELS.forEach(function (m) {
+      useModels.forEach(function (m) {
         var w = mh['wind_speed_10m_' + m.id];
         var g = mh['wind_gusts_10m_' + m.id];
         var d = mh['wind_direction_10m_' + m.id];
@@ -310,12 +367,16 @@
 
   function evaluateBundle(bundle, settings) {
     var spot = bundle.spot;
+    var official = state.jma[spot.id];
     return bundle.dates.map(function (date) {
       var d = bundle.daily[date] || {};
       var day = { date: date, sunrise: d.sunrise, hours: bundle.hours[date] };
       var res = R.evaluateDay(day, settings, { checkDirection: spot.kind === 'boat' });
       res.daily = d;
       res.tide = TIDE.daySummary(spot.tide, date);
+      res.dayMaxWave = R.maxOf(bundle.hours[date].map(function (h) { return h.wave; }));
+      res.official = official && official.days[date] ? official.days[date] : null;
+      res.conflicts = R.findConflicts(res);
       return res;
     });
   }
@@ -566,6 +627,21 @@
 
   var CONF_RANK = { high: 3, mid: 2, low: 1, unknown: 0 };
 
+  /**
+   * 16日ストリップ用の天気マークと降水確率。
+   * 判定が朝マヅメ帯なので、マークも降水確率も同じ時間帯の値をとる
+   * （日中の代表値を出すと「強い雨なのに ◎」のように判定と食い違って見える）。
+   */
+  function weatherCell(res) {
+    var w = weatherOf(res.metrics.weatherCode);
+    var pop = res.metrics.maxPrecipProb;
+    var cls = isNum(pop) && pop >= 50 ? 'pop wet' : 'pop';
+    return '<div class="wx" title="朝マヅメ帯の天気と降水確率">' +
+      '<span class="ico">' + w[1] + '</span>' +
+      '<span class="' + cls + '">' + (isNum(pop) ? pop + '%' : '—') + '</span>' +
+      '</div>';
+  }
+
   function dateLabel(dateStr) {
     var d = TIDE.parseDateKey(dateStr);
     return (d.getMonth() + 1) + '/' + d.getDate() + '(' + DOW[d.getDay()] + ')';
@@ -576,6 +652,7 @@
   var state = {
     settings: loadSettings(),
     bundles: {},      // spotId -> bundle
+    jma: {},          // spotId -> 気象庁の公式予報
     results: {},      // spotId -> [dayResult]
     selectedDate: null,
     shoreDate: null,
@@ -740,13 +817,11 @@
       b.type = 'button';
       b.setAttribute('aria-pressed', String(res.date === state.selectedDate));
       var dowCls = d.getDay() === 0 ? 'sun' : d.getDay() === 6 ? 'sat' : '';
-      // 判定が朝マヅメ帯なので、アイコンも同じ時間帯のものを出す
-      var w = weatherOf(res.metrics.weatherCode);
       b.innerHTML =
         '<div class="dow ' + dowCls + '">' + DOW[d.getDay()] + '</div>' +
         '<div class="md">' + (d.getMonth() + 1) + '/' + d.getDate() + '</div>' +
         '<div class="sym grade-' + gi.key + '" title="' + esc(gi.label) + '">' + gi.symbol + '</div>' +
-        '<div class="dot">' + w[1] + '</div>' +
+        weatherCell(res) +
         '<div class="v">' + fmt(res.metrics.maxWind, 1) + 'm/s</div>' +
         '<div class="v">' + (isNum(res.metrics.maxWave) ? fmt(res.metrics.maxWave, 2) + 'm' : '波—') + '</div>' +
         '<div class="dot">' + (res.tide ? esc(res.tide.phase) : '') + '</div>';
@@ -760,7 +835,8 @@
     host.appendChild(strip);
 
     var legend = el('div', 'muted');
-    legend.textContent = '◎出船適 ／ ○出船可 ／ △要注意 ／ ×出船不可（朝マヅメ帯の最悪値で判定）。数値は風速と波高の最大値。';
+    legend.textContent = '◎出船適 ／ ○出船可 ／ △要注意 ／ ×出船不可（朝マヅメ帯の最悪値で判定）。' +
+      '天気マークと％、風速・波高はいずれも朝マヅメ帯の値（％は降水確率、50%以上は赤）。';
     host.appendChild(legend);
   }
 
@@ -795,6 +871,22 @@
     var ul = el('ul', 'reasons');
     res.reasons.forEach(function (r) { ul.appendChild(el('li', null, r)); });
     card.appendChild(ul);
+
+    // --- 気象庁と食い違うなら判定のすぐ下で言う。表まで下がらないと気づかないのでは遅い
+    if (res.conflicts && res.conflicts.length) {
+      var cf = el('div', 'notice warn');
+      cf.style.marginTop = '10px';
+      cf.innerHTML = '<b>気象庁の公式予報と食い違っています</b><ul class="reasons">' +
+        res.conflicts.map(function (c) { return '<li>' + esc(c.text) + '</li>'; }).join('') + '</ul>';
+      card.appendChild(cf);
+    }
+    if (res.official && (res.official.wind || res.official.wave)) {
+      var od = el('dl', 'kv');
+      od.innerHTML =
+        '<dt>気象庁の風</dt><dd>' + esc(res.official.wind || '—') + '</dd>' +
+        '<dt>気象庁の沿岸波高</dt><dd>' + esc(res.official.wave || '—') + '</dd>';
+      card.appendChild(od);
+    }
 
     // --- サマリ
     var w = weatherOf(daily.weatherCode);
@@ -974,6 +1066,119 @@
     return wrap;
   }
 
+  // ================================================================ 描画: 気象庁の公式予報
+
+  var RELIABILITY_CLASS = { A: '', B: 'info', C: 'warn' };
+
+  /**
+   * 気象庁の公式予報を「第2の意見」として並べる。判定そのものは書き換えない。
+   * 沿岸の波と海上の風は気象庁のほうが実務的なので、食い違いは目立たせる。
+   */
+  function renderOfficial(spotId, results) {
+    var jma = state.jma[spotId];
+    if (!jma) return null;
+
+    var card = el('div', 'card');
+    card.appendChild(el('h2', null, '気象庁の公式予報（第2の意見）'));
+
+    var lead = el('div', 'sub');
+    lead.innerHTML = esc(jma.office || '気象庁') + ' 発表' +
+      (jma.reportDatetime ? '（' + esc(jma.reportDatetime.slice(5, 16).replace('T', ' ')) + '）' +
+        '<div class="muted">Yahoo天気や tenki.jp が配信しているのもこの予報です。' +
+        '沿岸の波と海上の風は、全球25km格子のモデルより気象庁の予報区の値のほうが岸の実態に近いので、' +
+        '食い違うときは気象庁側を重く見てください。</div>' : '');
+    card.appendChild(lead);
+
+    // --- 気象台の解説文。数値に出ない「なぜそうなるか」が書いてある
+    if (jma.overview && (jma.overview.headline || jma.overview.text)) {
+      var det = document.createElement('details');
+      det.style.margin = '10px 0';
+      var sum = document.createElement('summary');
+      sum.style.cursor = 'pointer';
+      sum.textContent = '気象台の解説文を読む';
+      det.appendChild(sum);
+      var body = el('div', 'sub');
+      body.style.whiteSpace = 'pre-wrap';
+      body.style.marginTop = '6px';
+      body.textContent = (jma.overview.headline ? jma.overview.headline + '\n\n' : '') + jma.overview.text;
+      det.appendChild(body);
+      card.appendChild(det);
+    }
+
+    // --- 日別の突き合わせ表
+    var rows = results.map(function (r) {
+      var o = r.official;
+      if (!o) return '';
+      var rel = o.reliability
+        ? '<span class="badge ' + RELIABILITY_CLASS[o.reliability] + '" title="' +
+          esc(FF.jma.RELIABILITY_NOTE[o.reliability] || '') + '">' + o.reliability + '</span>'
+        : '<span class="muted">—</span>';
+      return '<tr>' +
+        '<td>' + esc(dateLabel(r.date)) + '</td>' +
+        '<td style="text-align:left">' + FF.jma.icon(o.weatherCode) + ' ' + esc(o.weather || '—') + '</td>' +
+        '<td style="text-align:left">' + esc(o.wind || '—') + '</td>' +
+        '<td style="text-align:left">' + esc(o.wave || '—') + '</td>' +
+        '<td>' + (isNum(r.dayMaxWave) ? fmt(r.dayMaxWave, 2) + ' m' : '—') + '</td>' +
+        '<td>' + (isNum(o.pop) ? o.pop + '%' : '—') + '</td>' +
+        '<td>' + (isNum(r.daily.precipMax) ? r.daily.precipMax + '%' : '—') + '</td>' +
+        '<td>' + rel + '</td>' +
+        '<td>' + esc(r.confidence.label) + '</td>' +
+        '</tr>';
+    }).filter(Boolean).join('');
+
+    // 出所が交互に入れ替わる表なので、列グループ（colspan）にせず1行のヘッダに出所を書く。
+    // グループ化するとどの列がどちらの値か取り違えやすい。
+    var wrap = el('div', 'tbl-wrap');
+    wrap.innerHTML =
+      '<table><thead><tr>' +
+      '<th>日付</th>' +
+      '<th style="text-align:left">気象庁 天気</th>' +
+      '<th style="text-align:left">気象庁 風</th>' +
+      '<th style="text-align:left">気象庁 沿岸の波</th>' +
+      '<th>モデル波高</th><th>気象庁 降水</th><th>モデル降水</th>' +
+      '<th>気象庁 確度</th><th>モデル一致度</th>' +
+      '</tr></thead><tbody>' + rows + '</tbody></table>';
+    card.appendChild(wrap);
+
+    var noteBits = [
+      '気象庁の風・波・天気は3日先まで、週間（7日）は天気・降水確率・確度のみ。8日目以降は出ません。',
+      '確度 A=高い / B=やや高い / C=低い。C の日は予報が変わりやすいので直前に見直してください。'
+    ];
+    if (jma.weeklyAreaName) {
+      noteBits.push('週間予報と確度は' + jma.weeklyAreaName + '全体の値です（3日先までは' +
+        (results[0] && results[0].official && results[0].official.areaName ?
+          results[0].official.areaName : '予報区') + '単位）。');
+    }
+    card.appendChild(el('div', 'muted', noteBits.join(' ')));
+
+    // --- 食い違いの明示
+    var conflicts = results.filter(function (r) { return r.conflicts && r.conflicts.length; });
+    if (conflicts.length) {
+      var n = el('div', 'notice warn');
+      n.style.marginTop = '10px';
+      n.innerHTML = '<b>気象庁の予報と食い違っている日</b><ul class="reasons">' +
+        conflicts.map(function (r) {
+          return r.conflicts.map(function (c) {
+            return '<li>' + esc(dateLabel(r.date)) + '：' + esc(c.text) + '</li>';
+          }).join('');
+        }).join('') + '</ul>';
+      card.appendChild(n);
+    }
+
+    return card;
+  }
+
+  function yahooLinks() {
+    var d = el('div', 'muted');
+    d.innerHTML = '現地でよく当たると言われる Yahoo天気で確かめる： ' +
+      YAHOO_LINKS.map(function (l) {
+        return '<a href="' + l.url + '" target="_blank" rel="noopener">' + esc(l.label) + '</a>';
+      }).join(' ／ ') +
+      '<br>Yahoo天気には予報の公開APIが無く、ページの自動取得は利用規約に反するため、' +
+      'アプリでは上流の気象庁の予報を直接使っています。';
+    return d;
+  }
+
   // ================================================================ 描画: 東京湾タブ
 
   function renderShore() {
@@ -1042,6 +1247,23 @@
       '◎出船適 ／ ○出船可 ／ △要注意 ／ ×出船不可（日の出前後〜午前中の最悪値で判定）'));
     host.appendChild(cmp);
 
+    // 東京都と神奈川県それぞれの気象庁公式予報。東京湾は湾内の波が湾外と大きく違うので、
+    // 予報区単位の沿岸波高はモデル値より参考になる。
+    var seen = {};
+    ready.forEach(function (spot) {
+      if (!spot.jma) return;
+      var key = spot.jma.pref + '/' + spot.jma.area;
+      if (seen[key]) return;
+      seen[key] = true;
+      var c = renderOfficial(spot.id, state.results[spot.id]);
+      if (c) {
+        c.insertBefore(el('div', 'muted', '対象: ' +
+          ready.filter(function (s) { return s.jma && s.jma.pref + '/' + s.jma.area === key; })
+            .map(function (s) { return s.short; }).join('・')), c.children[1]);
+        host.appendChild(c);
+      }
+    });
+
     // 各所の16日ストリップ（コンパクト）
     ready.forEach(function (spot) {
       var c = el('div', 'card');
@@ -1053,14 +1275,14 @@
         var gi = res.gradeInfo || R.NO_DATA;
         var b = el('button', 'day');
         b.type = 'button';
-        b.style.width = '62px';
         b.setAttribute('aria-pressed', String(res.date === state.shoreDate));
         var dowCls = d.getDay() === 0 ? 'sun' : d.getDay() === 6 ? 'sat' : '';
         b.innerHTML =
           '<div class="dow ' + dowCls + '">' + DOW[d.getDay()] + '</div>' +
           '<div class="md">' + (d.getMonth() + 1) + '/' + d.getDate() + '</div>' +
-          '<div class="sym grade-' + gi.key + '">' + gi.symbol + '</div>' +
-          '<div class="v">' + fmt(res.metrics.maxWind, 1) + '</div>' +
+          '<div class="sym grade-' + gi.key + '" title="' + esc(gi.label) + '">' + gi.symbol + '</div>' +
+          weatherCell(res) +
+          '<div class="v">' + fmt(res.metrics.maxWind, 1) + 'm/s</div>' +
           '<div class="dot">' + (res.tide ? esc(res.tide.phase) : '') + '</div>';
         b.addEventListener('click', function () { state.shoreDate = res.date; renderShore(); });
         strip.appendChild(b);
@@ -1188,8 +1410,19 @@
     renderWindows();
     renderStrip();
     renderDetail();
+    renderOfficialPanel();
     renderShore();
     setStamp();
+  }
+
+  function renderOfficialPanel() {
+    var host = $('#official');
+    host.innerHTML = '';
+    var results = state.results.naoetsu;
+    if (!results) return;
+    var card = renderOfficial('naoetsu', results);
+    if (card) host.appendChild(card);
+    host.appendChild(yahooLinks());
   }
 
   function showErrors() {
@@ -1209,19 +1442,44 @@
     state.errors = [];
     $('#loading').style.display = '';
 
-    return Promise.all(SPOTS.map(function (spot) {
-      return loadSpot(spot).then(
-        function (bundle) {
-          state.bundles[spot.id] = bundle;
-          if (bundle.marineError) {
-            state.errors.push(spot.short + ': 波浪データ ' + bundle.marineError);
-          }
-        },
+    // 気象庁の公式予報。府県ごとに1回だけ取り、同じ府県の釣り場で使い回す。
+    var byPref = {};
+    SPOTS.forEach(function (s) {
+      if (s.jma) (byPref[s.jma.pref + '/' + s.jma.area] = byPref[s.jma.pref + '/' + s.jma.area] || []).push(s);
+    });
+    var jmaJobs = Object.keys(byPref).map(function (key) {
+      var parts = key.split('/');
+      return FF.jma.load(parts[0], parts[1]).then(
+        function (data) { byPref[key].forEach(function (s) { state.jma[s.id] = data; }); },
         function (err) {
-          state.errors.push(spot.short + ': ' + (err && err.message ? err.message : err));
+          // 気象庁の bosai JSON は正式なAPIではないので落ちうる。本体の判定は続行する。
+          state.errors.push('気象庁の公式予報を取得できませんでした（' +
+            (err && err.message ? err.message : err) + '）。モデル値のみで表示します。');
         }
       );
-    })).then(function () {
+    });
+
+    // 出船判断に使う直江津を先に取りにいく。制限に当たっても最重要の地点は揃う。
+    var ordered = SPOTS.slice().sort(function (a, b) {
+      return (a.kind === 'boat' ? 0 : 1) - (b.kind === 'boat' ? 0 : 1);
+    });
+    var spotJobs = ordered.map(function (spot) {
+      return function () {
+        return loadSpot(spot).then(
+          function (bundle) {
+            state.bundles[spot.id] = bundle;
+            if (bundle.marineError) {
+              state.errors.push(spot.short + ': 波浪データ ' + bundle.marineError);
+            }
+          },
+          function (err) {
+            state.errors.push(spot.short + ': ' + (err && err.message ? err.message : err));
+          }
+        );
+      };
+    });
+
+    return Promise.all(jmaJobs.concat([throttled(spotJobs, 2)])).then(function () {
       $('#loading').style.display = 'none';
       btn.disabled = false;
       btn.textContent = '再取得';

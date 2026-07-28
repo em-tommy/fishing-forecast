@@ -369,6 +369,52 @@
     return level === null || level === undefined ? '—' : GRADES[level].symbol;
   }
 
+  // ------------------------------------------------------------ 気象庁との突き合わせ
+
+  var CONFLICT = {
+    // 沿岸の波がこれ以上食い違ったら知らせる。気象庁の予報区の波高のほうが
+    // 全球25km格子のモデルより岸の実態に近いので、差は「気象庁が高い側」だけ見る。
+    waveGap: 0.3,
+    popGap: 30   // 降水確率のポイント差
+  };
+
+  /**
+   * 気象庁の公式予報と当アプリのモデル値を突き合わせ、食い違いを返す。
+   * どちらが正しいかは決められないので、平均して均すのではなく差を差のまま提示する。
+   *
+   * @param {Object} res evaluateDay の結果に official / dayMaxWave / daily を足したもの
+   */
+  function findConflicts(res) {
+    var o = res && res.official;
+    if (!o) return [];
+    var out = [];
+    var modelWave = res.dayMaxWave;
+    var modelPop = res.daily ? res.daily.precipMax : null;
+
+    if (isNum(o.waveMeters) && isNum(modelWave) && o.waveMeters - modelWave >= CONFLICT.waveGap) {
+      out.push({
+        kind: 'wave',
+        text: '気象庁は沿岸の波を最大 ' + o.waveMeters + ' m と予報（当アプリのモデル値は ' +
+          round(modelWave, 2) + ' m）。沿岸波高は気象庁のほうが実態に近いので、高いほうで考えること'
+      });
+    }
+    if (isNum(o.pop) && isNum(modelPop) && Math.abs(o.pop - modelPop) >= CONFLICT.popGap) {
+      out.push({
+        kind: 'pop',
+        // どちらもその日の最大値。一覧表に出しているのは朝マヅメ帯の値なので、
+        // 数字が合わなく見えないように何の値かを書いておく。
+        text: '降水確率が食い違う（その日の最大で 気象庁 ' + o.pop + '% / 当アプリ ' + modelPop + '%）'
+      });
+    }
+    if (o.reliability === 'C' && res.confidence && res.confidence.level === 'high') {
+      out.push({
+        kind: 'reliability',
+        text: '当アプリはモデルが一致しているが、気象庁は週間予報の確度を C（低い）としている'
+      });
+    }
+    return out;
+  }
+
   // ------------------------------------------------------------ 連続凪ウィンドウ
 
   /**
@@ -426,6 +472,8 @@
     dirName: dirName,
     levelFor: levelFor,
     evaluateDay: evaluateDay,
+    findConflicts: findConflicts,
+    CONFLICT: CONFLICT,
     findCalmWindows: findCalmWindows
   };
 })(typeof window !== 'undefined' ? window : globalThis);

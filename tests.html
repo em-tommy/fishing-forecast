@@ -20,6 +20,7 @@
 <!-- tide-data:end -->
 <script src="assets/tide.js"></script>
 <script src="assets/rating.js"></script>
+<script src="assets/jma.js"></script>
 <script>
 (function () {
   var out = document.getElementById('out');
@@ -49,6 +50,7 @@
 
   var R = FF.rating;
   var T = FF.tide;
+  var J = FF.jma;
 
   // ---------------------------------------------------------------- helpers
 
@@ -268,6 +270,54 @@
   ]);
   eq(mixed[0].start, '2026-08-01', '波高データのある窓を、grade が高い風のみ窓より先に並べる');
   eq(mixed[1].start, '2026-08-09', '風のみの窓は後ろ');
+
+  // ---------------------------------------------------------------- 気象庁との突き合わせ
+
+  section('気象庁の予報文の解釈');
+  eq(J.parseWaveMeters('０．５メートル　後　１．５メートル'), 1.5, '全角の波高予報文から最大値を取る');
+  eq(J.parseWaveMeters('１メートル'), 1, '単一の値');
+  eq(J.parseWaveMeters('０．５メートル'), 0.5, '小数点は全角の中点ではなく「．」');
+  eq(J.parseWaveMeters('２メートル　後　３メートル　うねり　を伴う'), 3, '「うねりを伴う」が付いても拾える');
+  eq(J.parseWaveMeters(''), null, '空文字は null');
+  eq(J.parseWaveMeters('波はおだやか'), null, '数値が無ければ null');
+  eq(J.telop(300), '雨', '天気コード 300 は雨');
+  eq(J.telop(203), '曇時々雨', '天気コード 203 は曇時々雨');
+  eq(J.telop(101), '晴時々曇', '天気コード 101 は晴時々曇');
+  eq(J.telop(999), '—', '未知のコードは —');
+  eq(J.telop(398), '雨', '未収録でも百の位でカテゴリに落とす');
+  eq(J.tidy('北の風　後　西の風'), '北の風 後 西の風', '全角スペースを半角に詰める');
+  eq(J.tidy('０．５メートル　後　１．５メートル'), '0.5メートル 後 1.5メートル',
+    '全角数字も半角にそろえる（他の数値表示と混ざると読みにくいため）');
+
+  section('気象庁とモデル値の食い違い検出');
+  function withOfficial(official, extra) {
+    return Object.assign({
+      official: official,
+      dayMaxWave: 0.7,
+      daily: { precipMax: 50 },
+      confidence: { level: 'high' }
+    }, extra || {});
+  }
+  eq(R.findConflicts({ official: null }).length, 0, '気象庁データが無ければ食い違いも無い');
+  var cWave = R.findConflicts(withOfficial({ waveMeters: 1.5, pop: 50 }));
+  eq(cWave.length, 1, '気象庁の波が 0.3m 以上高ければ知らせる');
+  eq(cWave[0].kind, 'wave', '種別は wave');
+  eq(R.findConflicts(withOfficial({ waveMeters: 1.0, pop: 50 })).length, 1, '0.7 対 1.0（差0.3）は境界で検出');
+  eq(R.findConflicts(withOfficial({ waveMeters: 0.99, pop: 50 })).length, 0, '差 0.29 では出さない');
+  eq(R.findConflicts(withOfficial({ waveMeters: 0.2, pop: 50 })).length, 0,
+    '気象庁のほうが低い場合は知らせない（安全側に倒れるので）');
+  var cPop = R.findConflicts(withOfficial({ waveMeters: null, pop: 10 }));
+  eq(cPop.length, 1, '降水確率が30ポイント以上違えば知らせる');
+  eq(cPop[0].kind, 'pop', '種別は pop');
+  eq(R.findConflicts(withOfficial({ waveMeters: null, pop: 25 })).length, 0, '差25ポイントでは出さない');
+  var cRel = R.findConflicts(withOfficial({ waveMeters: null, pop: 50, reliability: 'C' }));
+  eq(cRel.length, 1, 'モデルは一致でも気象庁の確度が C なら知らせる');
+  eq(R.findConflicts(withOfficial({ waveMeters: null, pop: 50, reliability: 'A' })).length, 0,
+    '確度 A なら何も出さない');
+  eq(R.findConflicts(withOfficial({ waveMeters: null, pop: 50, reliability: 'C' },
+    { confidence: { level: 'low' } })).length, 0, 'こちらも自信が無いなら食い違いではない');
+  eq(R.findConflicts(withOfficial({ waveMeters: 1.5, pop: 10, reliability: 'C' })).length, 3,
+    '3種類とも同時に出る');
 
   // ---------------------------------------------------------------- 潮汐
 
