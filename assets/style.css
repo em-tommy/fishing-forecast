@@ -319,7 +319,12 @@ section[hidden] { display: none; }
 
 .tbl-wrap { overflow-x: auto; }
 table {
-  border-collapse: collapse;
+  /* collapse ではなく separate + border-spacing:0。
+     iOS Safari は border-collapse:collapse の表のセルに position:sticky が効かず、
+     左端の日付列が固定されない（PCのChrome/Edgeでは効いてしまうので気づきにくい）。
+     罫線は各セルの border-bottom だけなので、separate にしても見た目は変わらない。 */
+  border-collapse: separate;
+  border-spacing: 0;
   width: 100%;
   font-size: .82rem;
   min-width: 460px;
@@ -340,6 +345,7 @@ td .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2p
    背景は必ず不透明にすること。透けるとスクロールした中身が下に覗いてしまう。 */
 .tbl-wrap table th:first-child,
 .tbl-wrap table td:first-child {
+  position: -webkit-sticky; /* iOS 12 以前 */
   position: sticky;
   left: 0;
   z-index: 2;

@@ -35,6 +35,21 @@ jobs:
           fi
           echo "found: ${files[*]}"
 
+      # CSS/JS の URL にコミットのSHAを付ける。
+      # スマホのブラウザ（とくに iOS Safari）は古い CSS を掴んだままになりがちで、
+      # 直したはずの表示が反映されない。ファイル名が変われば確実に取り直される。
+      # 書き換えるのは公開する成果物だけなので、リポジトリの中身は素のまま
+      # （index.html をダブルクリックしても動く状態を保つ）。
+      - name: Add cache-busting version to asset URLs
+        shell: bash
+        run: |
+          v="${GITHUB_SHA::8}"
+          for f in index.html tests.html; do
+            [ -f "$f" ] || continue
+            sed -i -E "s~(href=\"assets/[^\"?]+\.css)\"~\1?v=$v\"~g; s~(src=\"(assets|data)/[^\"?]+\.js)\"~\1?v=$v\"~g" "$f"
+          done
+          grep -o 'assets/style\.css?v=[0-9a-f]*' index.html
+
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
