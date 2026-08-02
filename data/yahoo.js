@@ -2,7 +2,7 @@
 // Source: Yahoo! JAPAN Weather point pages (weekly forecast table).
 // Regenerate: powershell -ExecutionPolicy Bypass -File tools\Fetch-Yahoo.ps1
 (function () {
-  var D = (window.YAHOO_DATA = { fetchedAt: "2026-08-02T15:17", points: {} });
+  var D = (window.YAHOO_DATA = { fetchedAt: "2026-08-02T19:58", points: {} });
   var p;
   p = D.points["15222"] = { code: "15222", announced: "2026-08-02T15:00", days: {} };
   p.days["2026-08-04"] = { weather: "晴れ", high: 34, low: 24, pop: 0 };
