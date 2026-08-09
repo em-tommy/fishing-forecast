@@ -2,20 +2,20 @@
 // Source: Yahoo! JAPAN Weather point pages (weekly forecast table).
 // Regenerate: powershell -ExecutionPolicy Bypass -File tools\Fetch-Yahoo.ps1
 (function () {
-  var D = (window.YAHOO_DATA = { fetchedAt: "2026-08-10T00:57", points: {} });
+  var D = (window.YAHOO_DATA = { fetchedAt: "2026-08-10T06:57", points: {} });
   var p;
-  p = D.points["15222"] = { code: "15222", announced: "2026-08-09T20:00", days: {} };
-  p.days["2026-08-12"] = { weather: "晴時々曇", high: 34, low: 22, pop: 30 };
-  p.days["2026-08-13"] = { weather: "晴時々曇", high: 35, low: 23, pop: 20 };
+  p = D.points["15222"] = { code: "15222", announced: "2026-08-10T05:00", days: {} };
+  p.days["2026-08-12"] = { weather: "晴時々曇", high: 30, low: 23, pop: 30 };
+  p.days["2026-08-13"] = { weather: "晴時々曇", high: 35, low: 23, pop: 30 };
   p.days["2026-08-14"] = { weather: "晴時々曇", high: 34, low: 24, pop: 30 };
-  p.days["2026-08-15"] = { weather: "曇時々晴", high: 33, low: 24, pop: 40 };
-  p.days["2026-08-16"] = { weather: "曇時々晴", high: 34, low: 25, pop: 30 };
-  p.days["2026-08-17"] = { weather: "晴時々曇", high: 35, low: 25, pop: 20 };
-  p = D.points["15482"] = { code: "15482", announced: "2026-08-09T20:00", days: {} };
-  p.days["2026-08-12"] = { weather: "晴時々曇", high: 30, low: 19, pop: 30 };
-  p.days["2026-08-13"] = { weather: "晴時々曇", high: 32, low: 20, pop: 20 };
-  p.days["2026-08-14"] = { weather: "晴時々曇", high: 31, low: 21, pop: 30 };
-  p.days["2026-08-15"] = { weather: "曇時々晴", high: 30, low: 22, pop: 50 };
-  p.days["2026-08-16"] = { weather: "曇時々晴", high: 31, low: 22, pop: 40 };
-  p.days["2026-08-17"] = { weather: "晴時々曇", high: 32, low: 23, pop: 20 };
+  p.days["2026-08-15"] = { weather: "晴時々曇", high: 34, low: 24, pop: 30 };
+  p.days["2026-08-16"] = { weather: "晴時々曇", high: 34, low: 24, pop: 20 };
+  p.days["2026-08-17"] = { weather: "晴時々曇", high: 34, low: 25, pop: 20 };
+  p = D.points["15482"] = { code: "15482", announced: "2026-08-10T05:00", days: {} };
+  p.days["2026-08-12"] = { weather: "曇時々晴", high: 27, low: 20, pop: 40 };
+  p.days["2026-08-13"] = { weather: "晴時々曇", high: 32, low: 20, pop: 30 };
+  p.days["2026-08-14"] = { weather: "晴時々曇", high: 32, low: 21, pop: 30 };
+  p.days["2026-08-15"] = { weather: "晴時々曇", high: 31, low: 21, pop: 30 };
+  p.days["2026-08-16"] = { weather: "晴時々曇", high: 31, low: 22, pop: 30 };
+  p.days["2026-08-17"] = { weather: "曇時々晴", high: 32, low: 22, pop: 30 };
 })();
