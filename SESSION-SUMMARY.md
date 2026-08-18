@@ -139,6 +139,25 @@ Edge のヘッドレスを使う。
 **index.html をコピーしてスクリプトを注入した一時HTMLを作り**、それを撮る（列固定の検証で実際に使った）。
 一時ファイルは消すこと。
 
+#### スマホ幅の確認は `--window-size` では**できない**（実際に誤判定した）
+
+Edge の new headless では **`--window-size` はビューポート幅を変えない。**
+
+- `--dump-dom` … `window.innerWidth` は常に 492 のまま。390 を指定しても無視される
+- `--screenshot` … 画像の幅は変わるが、**レイアウトは 492 のまま右側が切り落とされるだけ**。
+  つまり「スマホで見切れている」ように見えても、それは撮り方の問題であることがある（1度これで誤診した）
+
+正しい確認方法は **iframe を使って本物の390px ビューポートを作る**こと。
+
+```html
+<!doctype html><meta charset="utf-8">
+<style>html,body{margin:0}iframe{width:390px;height:2600px;border:0;display:block}</style>
+<iframe src="/index.html"></iframe>
+```
+
+これを開けば `innerWidth` が正しく 390 になり、はみ出しも実測できる。
+`#strip`（16日ストリップ）は意図的な横スクロール領域なので、子要素が画面幅を超えていても正常。
+
 ---
 
 ## 5. 判断を変えた出来事
