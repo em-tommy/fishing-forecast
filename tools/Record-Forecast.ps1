@@ -88,7 +88,7 @@ function Get-JsonWithRetry([string]$Url, [int]$Tries = 3) {
   }
 }
 
-function Append-Line([string]$Path, [string]$Line) {
+function Add-JsonLine([string]$Path, [string]$Line) {
   # Write without a BOM and with LF. Add-Content -Encoding utf8 would add a BOM
   # in PowerShell 5.1, which then shows up in the middle of an appended file.
   $enc = New-Object System.Text.UTF8Encoding($false)
@@ -106,7 +106,7 @@ function Read-Jsonl([string]$Path) {
   return $out
 }
 
-function Round-Or-Null($v, [int]$digits) {
+function Get-Rounded($v, [int]$digits) {
   if ($null -eq $v) { return $null }
   return [math]::Round([double]$v, $digits)
 }
@@ -146,7 +146,13 @@ function Get-Percentile($Values, [double]$P) {
 
 # ---------------------------------------------------------------- 1. forecast
 
-$today = (Get-Date).ToString('yyyy-MM-dd')
+# All dates here are JST, because Open-Meteo is queried with timezone=Asia/Tokyo
+# and AMeDAS timestamps are JST. GitHub Actions runners are UTC, so Get-Date would
+# be a day behind for a job that runs at 07:00 JST (= 22:00 UTC the previous day).
+# JST has no DST, so adding 9 hours is exact and works on Windows and Linux alike.
+function Get-NowJst { return [datetime]::UtcNow.AddHours(9) }
+
+$today = (Get-NowJst).ToString('yyyy-MM-dd')
 
 $fcUrl = 'https://api.open-meteo.com/v1/forecast' +
   '?latitude=' + $LAT + '&longitude=' + $LON +
@@ -233,9 +239,9 @@ if (-not $NoEnsemble) {
         $mx = ($worst | Measure-Object -Maximum).Maximum
         $ensDays[$dk] = [ordered]@{
           n = $worst.Count
-          p50 = Round-Or-Null (Get-Percentile $worst 0.50) 2
-          p90 = Round-Or-Null (Get-Percentile $worst 0.90) 2
-          max = Round-Or-Null $mx 2
+          p50 = Get-Rounded (Get-Percentile $worst 0.50) 2
+          p90 = Get-Rounded (Get-Percentile $worst 0.90) 2
+          max = Get-Rounded $mx 2
         }
       }
     }
@@ -265,8 +271,8 @@ for ($di = 0; $di -lt $dailyDates.Count; $di++) {
   foreach ($m in $MODELS) {
     $w = Get-WindowMax $fc.hourly.('wind_speed_10m_' + $m) $target $span[0] $span[1]
     $g = Get-WindowMax $fc.hourly.('wind_gusts_10m_' + $m) $target $span[0] $span[1]
-    $wind[$m] = Round-Or-Null $w 2
-    $gust[$m] = Round-Or-Null $g 2
+    $wind[$m] = Get-Rounded $w 2
+    $gust[$m] = Get-Rounded $g 2
     if ($null -ne $w) { $anyWind = $true }
   }
   if (-not $anyWind) { continue }
@@ -276,15 +282,15 @@ for ($di = 0; $di -lt $dailyDates.Count; $di++) {
     issued = $today
     target = $target
     lead = $lead
-    from = Round-Or-Null $span[0] 2
-    to = Round-Or-Null $span[1] 2
+    from = Get-Rounded $span[0] 2
+    to = Get-Rounded $span[1] 2
     sunrise = $sunrises[$di]
     wind = $wind
     gust = $gust
   }
   if ($ensDays.ContainsKey($target)) { $obj['ens'] = $ensDays[$target] }
 
-  Append-Line $fcLog (ConvertTo-Json $obj -Depth 6 -Compress)
+  Add-JsonLine $fcLog (ConvertTo-Json $obj -Depth 6 -Compress)
   $added++
 }
 Say ('forecast records added: ' + $added)
@@ -301,8 +307,8 @@ Say ('forecast records added: ' + $added)
 # better than they are at the lead times that actually matter for planning a trip.
 
 if ($BackfillDays -gt 0) {
-  $endD = (Get-Date).AddDays(-1)
-  $startD = (Get-Date).AddDays(-$BackfillDays)
+  $endD = (Get-NowJst).AddDays(-1)
+  $startD = (Get-NowJst).AddDays(-$BackfillDays)
   $arcUrl = 'https://historical-forecast-api.open-meteo.com/v1/forecast' +
     '?latitude=' + $LAT + '&longitude=' + $LON +
     '&start_date=' + $startD.ToString('yyyy-MM-dd') +
@@ -345,8 +351,8 @@ if ($BackfillDays -gt 0) {
           $vg = $sg[$idx]
           if ($null -ne $vg -and ($null -eq $bg -or $vg -gt $bg)) { $bg = $vg }
         }
-        $wind[$m] = Round-Or-Null $bw 2
-        $gust[$m] = Round-Or-Null $bg 2
+        $wind[$m] = Get-Rounded $bw 2
+        $gust[$m] = Get-Rounded $bg 2
         if ($null -ne $bw) { $anyW = $true }
       }
       if (-not $anyW) { continue }
@@ -356,13 +362,13 @@ if ($BackfillDays -gt 0) {
         target = $target
         lead = 0
         src = 'archive'
-        from = Round-Or-Null $span[0] 2
-        to = Round-Or-Null $span[1] 2
+        from = Get-Rounded $span[0] 2
+        to = Get-Rounded $span[1] 2
         sunrise = $arcSunrise[$di]
         wind = $wind
         gust = $gust
       }
-      Append-Line $fcLog (ConvertTo-Json $obj -Depth 6 -Compress)
+      Add-JsonLine $fcLog (ConvertTo-Json $obj -Depth 6 -Compress)
       $existing[$key] = $true
       $backAdded++
     }
@@ -379,7 +385,7 @@ foreach ($rec in (Read-Jsonl $obsLog)) { $obsHave[$rec.date] = $true }
 
 $obsAdded = 0
 for ($back = 1; $back -le $ObsDays; $back++) {
-  $day = (Get-Date).AddDays(-$back)
+  $day = (Get-NowJst).AddDays(-$back)
   $dk = $day.ToString('yyyy-MM-dd')
   if ($obsHave.ContainsKey($dk)) { continue }
 
@@ -420,16 +426,16 @@ for ($back = 1; $back -le $ObsDays; $back++) {
 
   $arr = @()
   for ($h = 0; $h -lt 24; $h++) {
-    if ($hourly.ContainsKey($h)) { $arr += (Round-Or-Null $hourly[$h] 1) } else { $arr += $null }
+    if ($hourly.ContainsKey($h)) { $arr += (Get-Rounded $hourly[$h] 1) } else { $arr += $null }
   }
   $obj = [ordered]@{
     date = $dk
     station = $AMEDAS_ID
     wind = $arr          # hourly maximum of the 10-minute mean wind, m/s
-    gustMax = Round-Or-Null $gustMax 1
+    gustMax = Get-Rounded $gustMax 1
     complete = $ok
   }
-  Append-Line $obsLog (ConvertTo-Json $obj -Depth 4 -Compress)
+  Add-JsonLine $obsLog (ConvertTo-Json $obj -Depth 4 -Compress)
   $obsAdded++
   Say ('  observations recorded for ' + $dk)
 }
@@ -514,7 +520,7 @@ foreach ($f in $fcRecs) {
   }
 
   if ($f.lead -eq 1 -or $f.src -eq 'archive') {
-    $row = [ordered]@{ target = $f.target; obs = Round-Or-Null $obsMax 1; lead = $f.lead }
+    $row = [ordered]@{ target = $f.target; obs = Get-Rounded $obsMax 1; lead = $f.lead }
     if ($f.src -eq 'archive') { $row['src'] = 'archive' }
     foreach ($m in $MODELS) { $row[$m] = $f.wind.$m }
     if ($null -ne $f.ens) { $row['ens_p90'] = $f.ens.p90 }
@@ -550,7 +556,7 @@ if ($recent.Count -gt 0) {
 }
 
 $out = [ordered]@{
-  updated = (Get-Date).ToString('yyyy-MM-ddTHH:mmzzz')
+  updated = (Get-NowJst).ToString('yyyy-MM-ddTHH:mm') + '+09:00'
   station = $AMEDAS_ID
   window = [ordered]@{ before = $WINDOW_BEFORE; after = $WINDOW_AFTER; period = 'morning' }
   models = $MODELS
