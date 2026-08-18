@@ -416,6 +416,11 @@
     var allVals = [];
     series.forEach(function (s) { s.values.forEach(function (v) { if (isNum(v)) allVals.push(v); }); });
     (opts.thresholds || []).forEach(function (t) { allVals.push(t.value); });
+    // 帯（アンサンブルの分位幅）も軸の範囲に入れる。入れないと帯が枠外にはみ出す
+    if (opts.ribbon) {
+      opts.ribbon.upper.forEach(function (v) { if (isNum(v)) allVals.push(v); });
+      opts.ribbon.lower.forEach(function (v) { if (isNum(v)) allVals.push(v); });
+    }
     if (!allVals.length) {
       return '<svg class="chart" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="' +
         esc(opts.title || '') + '（データなし）"><text class="tick" x="' + (W / 2) + '" y="' + (H / 2) +
@@ -474,6 +479,28 @@
       out.push('<line class="marker-line" x1="' + x.toFixed(1) + '" y1="' + y0 + '" x2="' + x.toFixed(1) + '" y2="' + y1 + '"/>');
       out.push('<text class="marker-text" x="' + (x + 3).toFixed(1) + '" y="' + (y0 + 9) + '">' + esc(m.label) + '</text>');
     });
+
+    // 帯（上限と下限のあいだを塗る）。アンサンブルの分位幅に使う。
+    // 系列より先に描いて背面に置く。
+    if (opts.ribbon) {
+      var up = [], lo = [];
+      function flushRibbon() {
+        if (up.length < 2) { up = []; lo = []; return; }
+        out.push('<path class="ribbon" fill="' + opts.ribbon.color +
+          '" d="M' + up.join(' L') + ' L' + lo.reverse().join(' L') + ' Z"/>');
+        up = []; lo = [];
+      }
+      for (var rh = 0; rh < opts.ribbon.upper.length; rh++) {
+        var uv = opts.ribbon.upper[rh], lv = opts.ribbon.lower[rh];
+        if (isNum(uv) && isNum(lv)) {
+          up.push(px(rh).toFixed(1) + ',' + py(uv).toFixed(1));
+          lo.push(px(rh).toFixed(1) + ',' + py(lv).toFixed(1));
+        } else {
+          flushRibbon();
+        }
+      }
+      flushRibbon();
+    }
 
     // 系列
     series.forEach(function (s) {
@@ -681,6 +708,7 @@
     },
     bundles: {},      // spotId -> bundle
     jma: {},          // spotId -> 気象庁の公式予報
+    ensemble: null,   // 直江津のアンサンブル（51本）。出船判断にしか使わない
     results: {},      // spotId -> [dayResult]
     selectedDate: null,
     shoreDate: null,
@@ -965,14 +993,21 @@
         };
       });
     } else {
+      // グラフの線は判定に使っている代表値と同じ取り方にする。
+      // 別々だと「グラフは穏やかなのに × が付く」ことになり、根拠を追えなくなる。
+      var aggInfo = R.MODEL_AGG[state.settings.modelAgg] || R.MODEL_AGG.median;
       windSeries = [
         {
-          label: '風速（4モデル中央値）', color: 'var(--s1)',
-          values: hours.map(function (r) { return R.median(Object.keys(r.wind).map(function (k) { return r.wind[k]; })); })
+          label: '風速（4モデルの' + aggInfo.label + '）', color: 'var(--s1)',
+          values: hours.map(function (r) {
+            return R.combineModels(Object.keys(r.wind).map(function (k) { return r.wind[k]; }), state.settings.modelAgg);
+          })
         },
         {
           label: '最大瞬間', color: 'var(--s2)', dash: true,
-          values: hours.map(function (r) { return R.median(Object.keys(r.gust).map(function (k) { return r.gust[k]; })); })
+          values: hours.map(function (r) {
+            return R.combineModels(Object.keys(r.gust).map(function (k) { return r.gust[k]; }), state.settings.modelAgg);
+          })
         }
       ];
     }
@@ -991,6 +1026,31 @@
       '<h3 style="font-size:.85rem;margin:14px 0 2px">風速 <span class="muted">m/s</span></h3>');
     chartHost.insertAdjacentHTML('beforeend', legendHtml(windChart.series));
     chartHost.insertAdjacentHTML('beforeend', '<div class="chart-wrap">' + windChart.svg + '</div>');
+
+    // アンサンブル（51本のばらつき）。決定論の4モデルとは意味が違うので別パネルにする。
+    var bands = state.ensemble ? FF.ensemble.hourlyBands(state.ensemble, res.date) : null;
+    if (bands && bands.p50.some(isNum)) {
+      var ensChart = lineChart({
+        title: 'アンサンブルのばらつき', unit: ' m/s', decimals: 1, height: 140,
+        ribbon: { upper: bands.p90, lower: bands.p10, color: 'var(--s1)' },
+        series: [
+          { label: '中央値（51本）', color: 'var(--s1)', values: bands.p50 },
+          { label: '最も強い1本', color: 'var(--s2)', dash: true, values: bands.max }
+        ],
+        band: band, markers: markers,
+        thresholds: [
+          { value: state.settings.goodWind, label: '◎ ' + state.settings.goodWind + ' m/s' },
+          { value: state.settings.fairWind, label: '× ' + state.settings.fairWind + ' m/s' }
+        ]
+      });
+      charts.push(ensChart);
+      chartHost.insertAdjacentHTML('beforeend',
+        '<h3 style="font-size:.85rem;margin:14px 0 2px">アンサンブルのばらつき <span class="muted">m/s</span></h3>' +
+        '<div class="hint" style="margin-bottom:4px">帯は51本のうち中央8割が収まる範囲。' +
+        '帯が広い時間帯ほど「まだ決まっていない」。破線は最も強い1本で、最悪の場合の目安。</div>');
+      chartHost.insertAdjacentHTML('beforeend', legendHtml(ensChart.series));
+      chartHost.insertAdjacentHTML('beforeend', '<div class="chart-wrap">' + ensChart.svg + '</div>');
+    }
 
     // 波（m のみ）
     var waveSeries = [
@@ -1367,9 +1427,147 @@
     { key: 'afternoonRiseDelta', label: '午後の吹き上がり警告のしきい値', unit: ' m/s', min: 1, max: 10, step: .5 }
   ];
 
+  /**
+   * 4つのモデルの値を1つに束ねる方法を選ばせる。
+   * 中央値は「最も確からしい値」だが、2馬力3mの船で効くのは外したときの荒れ方なので、
+   * 荒天側に寄せて見たい日のために選択肢を出す。判定のされ方が根本から変わるので
+   * しきい値より前に置く。
+   */
+  function renderAggCard(host) {
+    var card = el('div', 'card');
+    card.appendChild(el('h2', null, 'モデルの代表値の取り方'));
+    card.appendChild(el('div', 'sub',
+      '4つのモデルが違う値を出したとき、どれを判定に使うかを選びます。' +
+      '風速と最大瞬間風速に効きます（波高は単一の予報しかないため変わりません）。'));
+
+    var group = el('div', 'choices');
+    R.MODEL_AGG_ORDER.forEach(function (key) {
+      var info = R.MODEL_AGG[key];
+      var id = 'agg-' + key;
+      var lab = el('label', 'choice');
+      lab.htmlFor = id;
+      var input = document.createElement('input');
+      input.type = 'radio';
+      input.name = 'modelAgg';
+      input.id = id;
+      input.value = key;
+      input.checked = state.settings.modelAgg === key;
+      input.addEventListener('change', function () {
+        if (!input.checked) return;
+        state.settings.modelAgg = key;
+        saveSettings(state.settings);
+        recomputeAll();
+      });
+      lab.appendChild(input);
+      lab.insertAdjacentHTML('beforeend',
+        '<span><b>' + esc(info.label) + '</b><br><span class="hint">' + esc(info.desc) + '</span></span>');
+      group.appendChild(lab);
+    });
+    card.appendChild(group);
+    card.insertAdjacentHTML('beforeend',
+      '<div class="hint" style="margin-top:8px">' +
+      'どれを選んでもモデルの一致度（ばらつき）は生の全モデルから測ります。' +
+      '荒天側に寄せたせいで「予報が一致している」ように見えることはありません。</div>');
+    host.appendChild(card);
+  }
+
+  /**
+   * モデルの答え合わせ。
+   *
+   * 表示の原則: サンプルが足りないうちは順位を出さない。
+   * 8件の平均で「ECMWFが最も当たる」と書けば、それは読んだ人を誤らせる。
+   * 何件必要かを先に示し、足りないことをそのまま出す。
+   */
+  function renderVerifyCard(host) {
+    if (!FF.verify || !FF.verify.available()) return;
+    var V = FF.verify;
+    var prog = V.progress();
+    var st = V.station();
+    var keys = V.seriesKeys();
+    var bks = V.buckets();
+    if (!keys.length || !bks.length) return;
+
+    var card = el('div', 'card');
+    card.appendChild(el('h2', null, 'モデルの答え合わせ'));
+    card.insertAdjacentHTML('beforeend',
+      '<div class="sub">予報と実測を毎日突き合わせています。実測は AMeDAS ' +
+      esc(st ? st.name : '') + '（釣り場から約 ' + (st && st.distanceKm ? st.distanceKm : '—') +
+      ' km の海岸）の10分平均風速で、朝マヅメ帯の最大値どうしを比べています。' +
+      '<b>陸上の1点であって沖の海面ではありません。</b>モデル同士の相対比較には使えますが、絶対的な正解ではありません。</div>');
+
+    // 進捗。「まだ言えない」を先に言う。
+    var need = Math.max(0, prog.minUseful - prog.leadPairs);
+    var note = el('div', 'notice' + (prog.enough ? '' : ' warn'));
+    if (prog.enough) {
+      note.innerHTML = '<b>リード別に ' + prog.leadPairs + ' 件たまりました。</b>' +
+        '傾向を読み始められますが、季節が一巡するまでは冬型の成績が入りません。';
+    } else {
+      note.innerHTML = '<b>データ収集中です。あと約 ' + need + ' 件でリード別の比較を始められます。</b>' +
+        '<div style="margin-top:4px">1日あたり15件ずつ記録し、その日が来て実測と揃った時点で1件になります。' +
+        'いまの件数で順位を付けても偶然と区別がつかないため、順位はまだ出しません。</div>';
+    }
+    card.appendChild(note);
+
+    // 表。MAE（平均どれだけ外したか）と bias（＋なら強めに予報する癖）。
+    var head = ['<tr><th>予報</th>'];
+    bks.forEach(function (b) { head.push('<th title="' + esc(b.desc) + '">' + esc(b.label) + '</th>'); });
+    head.push('</tr>');
+
+    var body = keys.map(function (m) {
+      var tds = ['<td>' + esc(V.modelLabel(m)) + '</td>'];
+      bks.forEach(function (b) {
+        var c = V.cell(m, b.key);
+        if (!c || !c.n) {
+          tds.push('<td class="muted">—</td>');
+          return;
+        }
+        var biasTxt = (c.bias > 0 ? '+' : '') + fmt(c.bias, 2);
+        tds.push('<td>' + fmt(c.mae, 2) +
+          '<span class="muted" style="font-size:.78em"> (' + biasTxt + ')<br>n=' + c.n + '</span></td>');
+      });
+      return '<tr>' + tds.join('') + '</tr>';
+    }).join('');
+
+    card.insertAdjacentHTML('beforeend',
+      '<div class="tbl-wrap"><table><thead>' + head.join('') + '</thead><tbody>' + body + '</tbody></table></div>' +
+      '<div class="hint" style="margin-top:6px">上段が平均絶対誤差（m/s、小さいほど当たる）、' +
+      'かっこ内が偏り（＋は実際より強く予報する癖、−は弱く見積もる癖）。n は突き合わせ件数。</div>');
+
+    // 直近の生データ。集計だけ見せると、数字がどこから来たか追えなくなる。
+    var rec = V.recent();
+    if (rec.length) {
+      var rHead = ['<tr><th>日付</th><th>実測</th>'];
+      var mKeys = keys.filter(function (k) { return k.indexOf('ens_') !== 0; });
+      mKeys.forEach(function (m) { rHead.push('<th>' + esc(V.modelLabel(m)) + '</th>'); });
+      rHead.push('</tr>');
+      var rBody = rec.slice().reverse().map(function (row) {
+        var tds = ['<td>' + esc(dateLabel(row.target)) + (row.src === 'archive' ? '<span class="muted">*</span>' : '') + '</td>',
+          '<td><b>' + fmt(row.obs, 1) + '</b></td>'];
+        mKeys.forEach(function (m) { tds.push('<td>' + fmt(row[m], 1) + '</td>'); });
+        return '<tr>' + tds.join('') + '</tr>';
+      }).join('');
+      card.insertAdjacentHTML('beforeend',
+        '<h3 style="font-size:.85rem;margin:14px 0 4px">直近の突き合わせ <span class="muted">m/s</span></h3>' +
+        '<div class="tbl-wrap"><table><thead>' + rHead.join('') + '</thead><tbody>' + rBody + '</tbody></table></div>' +
+        '<div class="hint" style="margin-top:6px">* は過去日をあとから取り寄せた短期予報です。' +
+        'リード別の集計には入れていません。</div>');
+    }
+
+    card.insertAdjacentHTML('beforeend',
+      '<div class="hint" style="margin-top:10px">' +
+      '<b>重み付けをまだ入れていない理由。</b>ここに十分なデータが溜まるまで、' +
+      'どのモデルを重く見るかは推測にしかなりません。溜まって明確な差が出たら、根拠を持って導入できます。' +
+      (prog.updated ? ' 最終更新 ' + esc(String(prog.updated).slice(0, 16).replace('T', ' ')) : '') +
+      '</div>');
+
+    host.appendChild(card);
+  }
+
   function renderSettings() {
     var host = $('#settings-body');
     host.innerHTML = '';
+
+    renderAggCard(host);
 
     var card = el('div', 'card');
     card.appendChild(el('h2', null, '出船判定のしきい値'));
@@ -1404,6 +1602,7 @@
     });
 
     var reset = el('button', null, '初期値に戻す');
+    reset.type = 'button';
     reset.addEventListener('click', function () {
       state.settings = Object.assign({}, R.DEFAULTS);
       saveSettings(state.settings);
@@ -1427,6 +1626,8 @@
       '°）。海面は穏やかになるが沖へ流されるため<b>警告のみ</b>で判定は下げません。</dd>' +
       '</dl>');
     host.appendChild(dirCard);
+
+    renderVerifyCard(host);
 
     // データの限界
     var limitCard = el('div', 'card');
@@ -1466,6 +1667,7 @@
     renderWindows();
     renderStrip();
     renderDetail();
+    renderEnsemble();
     renderOfficialPanel();
     renderShore();
     renderManual();
@@ -1475,6 +1677,108 @@
   function renderManual() {
     // しきい値や時間帯を変えたら説明も追従させる（説明だけ古くなるのを防ぐ）
     if (FF.manual) FF.manual.render($('#manual-body'), state.settings, state.period);
+  }
+
+  /**
+   * アンサンブル51本の内訳を日ごとに帯で出す。
+   *
+   * ここが「モデルに重みを付けて中心を精密にする」より価値がある理由:
+   * 中央値が 1.3 m/s でも、51本のうち5本が 8 m/s を出しているなら、
+   * それは凪ではなく「凪かもしれない」。2馬力3mの船で効くのはその裾のほう。
+   *
+   * 内訳は風と突風だけで付けた等級であり、波・雷を含む本体の判定とは別物。
+   * 混同すると波を無視した判断になるので、ラベルで必ず断る。
+   */
+  function renderEnsemble() {
+    var host = $('#ensemble');
+    if (!host) return;
+    host.innerHTML = '';
+    var results = state.results.naoetsu;
+    if (!results || !state.ensemble || !state.ensemble.members) return;
+
+    var rows = [];
+    var covered = 0;
+    results.forEach(function (res) {
+      if (!res.window || !isNum(res.window.from)) return;
+      var s = FF.ensemble.daySummary(state.ensemble, res.date, res.window.from, res.window.to, state.settings);
+      if (s) covered++;
+      rows.push({ res: res, sum: s });
+    });
+    if (!covered) return;
+
+    var card = el('div', 'card');
+    var pLabel = results[0].window.label;
+    card.appendChild(el('h2', null, 'アンサンブル予報（' + state.ensemble.members + '本の内訳）'));
+    card.insertAdjacentHTML('beforeend',
+      '<div class="sub">同じモデルを初期値を少しずつ変えて' + state.ensemble.members +
+      '回走らせた結果です。' + esc(pLabel) + '帯で各本がどの判定になるかの割合を出しています。' +
+      '<b>風と最大瞬間風速だけ</b>で付けた内訳で、波・雷は含みません（本体の判定とは別物です）。</div>');
+
+    card.insertAdjacentHTML('beforeend',
+      '<div class="legend ens-legend">' +
+      '<span><i style="background:var(--good)"></i>◎ 出船適</span>' +
+      '<span><i style="background:var(--warning)"></i>○ 出船可</span>' +
+      '<span><i style="background:var(--serious)"></i>△ 要注意</span>' +
+      '<span><i style="background:var(--critical)"></i>× 出船不可</span>' +
+      '</div>');
+
+    var list = el('div', 'ens-list');
+    rows.forEach(function (row) {
+      var s = row.sum;
+      var btn = el('button', 'ens-row');
+      btn.type = 'button';
+      btn.setAttribute('aria-pressed', String(row.res.date === state.selectedDate));
+
+      if (!s) {
+        btn.innerHTML =
+          '<span class="ens-date">' + esc(dateLabel(row.res.date)) + '</span>' +
+          '<span class="ens-bar empty"></span>' +
+          '<span class="ens-num muted">対象外</span>';
+      } else {
+        var segs = [
+          { pct: s.goodPct, cls: 'good', sym: '◎' },
+          { pct: s.fairPct, cls: 'fair', sym: '○' },
+          { pct: s.marginalPct, cls: 'marginal', sym: '△' },
+          { pct: s.badPct, cls: 'bad', sym: '×' }
+        ];
+        var bar = segs.filter(function (g) { return g.pct > 0; }).map(function (g) {
+          return '<span class="seg seg-' + g.cls + '" style="width:' + g.pct + '%" title="' +
+            g.sym + ' ' + g.pct + '%"></span>';
+        }).join('');
+        // 数字は「中央値 / 最も強い1本」。裾が見えることがこの表示の主目的なので最大値は必ず出す。
+        // × の割合は帯の赤い部分がそのまま示しているので、数字では繰り返さない
+        // （同じことを2つの表現で出すと、狭い画面で行が入りきらなくなる）。
+        btn.title = dateLabel(row.res.date) + '  ' + segs.map(function (g) {
+          return g.sym + ' ' + g.pct + '%';
+        }).join(' / ') + '（' + s.n + '本）';
+        btn.innerHTML =
+          '<span class="ens-date">' + esc(dateLabel(row.res.date)) + '</span>' +
+          '<span class="ens-bar">' + bar + '</span>' +
+          '<span class="ens-num">' + fmt(s.p50, 1) + '<span class="muted"> / </span>' +
+          '<b class="' + (s.badPct >= 20 ? 'hot' : '') + '">' + fmt(s.max, 1) + '</b>' +
+          '<span class="muted"> m/s</span></span>';
+      }
+      btn.addEventListener('click', function () {
+        state.selectedDate = row.res.date;
+        renderStrip();
+        renderDetail();
+        renderEnsemble();
+        var d = $('#detail');
+        if (d) d.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+      list.appendChild(btn);
+    });
+    card.appendChild(list);
+
+    card.insertAdjacentHTML('beforeend',
+      '<div class="hint" style="margin-top:8px">数字は判定帯の最大風速の「中央値 / 最も強い1本」（m/s）。' +
+      '中央値が穏やかでも右の数字が大きい日は、まだ荒れる可能性が残っています。' +
+      (state.ensemble.lastDate
+        ? 'アンサンブルは ' + esc(dateLabel(state.ensemble.lastDate)) + ' まで。それ以降は4モデルの比較のみです。'
+        : '') +
+      '</div>');
+
+    host.appendChild(card);
   }
 
   function renderOfficialPanel() {
@@ -1540,6 +1844,23 @@
         );
       };
     });
+
+    // アンサンブルは直江津の1地点だけ。gzip で約50KB あるので、
+    // 他の地点の取得と同じ待ち行列に入れて同時接続数を増やさない。
+    // 直江津本体の次に取りにいく（本体が揃わないうちに重い取得を始めない）。
+    var boat = SPOTS.filter(function (s) { return s.kind === 'boat'; })[0];
+    if (boat) {
+      spotJobs.splice(1, 0, function () {
+        return fetchJson(FF.ensemble.url(boat.lat, boat.lon, 16)).then(
+          function (r) { state.ensemble = FF.ensemble.parse(r.json); },
+          function (err) {
+            // アンサンブルは追加情報なので、落ちても本体の判定は続ける
+            state.errors.push('アンサンブル予報を取得できませんでした（' +
+              (err && err.message ? err.message : err) + '）。4モデルの比較のみ表示します。');
+          }
+        );
+      });
+    }
 
     return Promise.all(jmaJobs.concat([throttled(spotJobs, 2)])).then(function () {
       $('#loading').style.display = 'none';

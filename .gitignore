@@ -8,3 +8,4 @@ Desktop.ini
 # 一時ファイル
 *.log
 *.tmp
+__tmp_*.html

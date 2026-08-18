@@ -23,6 +23,9 @@
 <script src="data/yahoo.js"></script>
 <script src="assets/tide.js"></script>
 <script src="assets/rating.js"></script>
+<script src="assets/ensemble.js"></script>
+<script src="data/verify.js"></script>
+<script src="assets/verify.js"></script>
 <script src="assets/jma.js"></script>
 <script src="assets/yahoo.js"></script>
 <script>
@@ -489,6 +492,148 @@
   eq(ex.length, 2, '4〜9時の窓に満潮1・干潮1が入る');
   eq(ex[0].kind, '満潮', '先に満潮');
   eq(ex[1].kind, '干潮', '次に干潮');
+
+  // -------------------------------------------------- 代表値の取り方（B）
+
+  section('percentile / combineModels');
+  eq(R.percentile([1, 2, 3, 4, 5], 0.5), 3, '5個の中央は3番目');
+  eq(R.percentile([1, 2, 3, 4], 0.75), 3, '4個の75%点は3');
+  eq(R.percentile([5, 1, 3], 0), 1, '0%は最小');
+  eq(R.percentile([5, 1, 3], 1), 5, '100%は最大');
+  eq(R.percentile([2, null, 8, NaN], 1), 8, '欠損は無視する');
+  eq(R.percentile([], 0.5), null, '有効値ゼロなら null');
+  ok(R.percentile([1, 2, 3, 4], 0.5) === 2 || R.percentile([1, 2, 3, 4], 0.5) === 3,
+    '分位は補間せず実在する値を返す', String(R.percentile([1, 2, 3, 4], 0.5)));
+
+  var vals4 = [2, 4, 6, 12];
+  eq(R.combineModels(vals4, 'median'), 5, 'median は中央値（偶数個は平均）');
+  eq(R.combineModels(vals4, 'high'), 6, 'high は上側（悪いほう）');
+  eq(R.combineModels(vals4, 'worst'), 12, 'worst は最大');
+  eq(R.combineModels(vals4, undefined), 5, '未指定は median と同じ');
+  eq(R.combineModels(vals4, 'nonsense'), 5, '不明な指定でも median にフォールバック');
+  eq(R.combineModels([null, null], 'worst'), null, '全欠損なら null');
+
+  section('代表値の取り方が判定に効く');
+  // 1モデルだけ荒天を出す日。中央値では埋もれ、worst では効く。
+  var splitDay = makeDay({ wind: 3, gust: 5, wave: 0.1 });
+  splitDay.hours.forEach(function (r) { r.wind.jma_seamless = 9; r.gust.jma_seamless = 12; });
+
+  var rMed = R.evaluateDay(splitDay, {}, { checkDirection: false });
+  var rWorst = R.evaluateDay(splitDay, { modelAgg: 'worst' }, { checkDirection: false });
+  var rHigh = R.evaluateDay(splitDay, { modelAgg: 'high' }, { checkDirection: false });
+  eq(rMed.grade, 3, '中央値では1本の荒天予報は埋もれて ◎');
+  eq(rWorst.grade, 0, '最悪を採ると荒天予報が効いて ×');
+  ok(rHigh.grade <= rMed.grade, '上側は中央値より甘くならない',
+    'high=' + rHigh.grade + ' median=' + rMed.grade);
+  eq(rMed.modelAgg, 'median', '既定は median');
+  eq(rWorst.modelAgg, 'worst', '指定した取り方が結果に載る');
+  ok(rWorst.flags.indexOf('strictAgg') >= 0, '中央値以外のときはバッジが付く');
+  ok(rMed.flags.indexOf('strictAgg') < 0, '中央値のときはバッジを付けない');
+  // ばらつきは代表値の取り方に左右されない（荒天側に寄せて一致度が上がって見えては困る）
+  eq(rWorst.confidence.sd, rMed.confidence.sd, 'モデル一致度は代表値の取り方で変わらない');
+  ok(R.FLAGS.strictAgg && R.FLAGS.strictAgg.label, 'strictAgg はバッジ表に定義がある');
+  R.MODEL_AGG_ORDER.forEach(function (k) {
+    ok(R.MODEL_AGG[k] && R.MODEL_AGG[k].label && R.MODEL_AGG[k].desc,
+      'MODEL_AGG.' + k + ' に表示名と説明がある');
+  });
+
+  // -------------------------------------------------- アンサンブル（A）
+
+  section('アンサンブルの集計');
+  var E = FF.ensemble;
+
+  /** 3メンバーの合成アンサンブル。member[i] の hour 別風速を与える。 */
+  function makeEns(members) {
+    var hours = {};
+    for (var h = 0; h < 24; h++) {
+      hours[h] = {
+        wind: members.map(function (m) { return m.wind[h]; }),
+        gust: members.map(function (m) { return m.gust ? m.gust[h] : null; })
+      };
+    }
+    return { members: members.length, days: { '2026-08-01': { date: '2026-08-01', hours: hours } },
+      lastDate: '2026-08-01', dates: ['2026-08-01'] };
+  }
+  function flat(v) { var a = []; for (var h = 0; h < 24; h++) a.push(v); return a; }
+
+  // メンバーAは朝だけ荒れ、メンバーBは昼だけ荒れる。
+  // 窓の中の最悪値を先に取れば「朝に荒れる1本」しか出ない。
+  // 先に時刻ごとの分位を取ると、朝も昼も荒れる存在しない1本が出来てしまう。
+  var mA = { wind: flat(2) }; mA.wind[6] = 10;   // 朝に荒れる
+  var mB = { wind: flat(2) }; mB.wind[13] = 10;  // 昼に荒れる（判定窓の外）
+  var mC = { wind: flat(2) };                    // ずっと穏やか
+  var ens = makeEns([mA, mB, mC]);
+  var worstList = E.memberWorst(ens.days['2026-08-01'], 4, 9);
+  eq(worstList.length, 3, 'メンバー数ぶん返る');
+  eq(worstList[0].wind, 10, '窓内に荒れる時刻があるメンバーは10');
+  eq(worstList[1].wind, 2, '窓の外で荒れるメンバーは窓内の値のまま');
+
+  var T4 = Object.assign({}, R.DEFAULTS);
+  var sum = E.daySummary(ens, '2026-08-01', 4, 9, T4);
+  eq(sum.n, 3, '3本を集計');
+  eq(sum.max, 10, '最大は荒れる1本');
+  eq(sum.p50, 2, '中央値は穏やかなまま（1本の荒天は中央値に出ない＝裾を見る意味）');
+  eq(sum.badPct, 33, '3本中1本が × なので33%');
+  eq(sum.okPct, 67, '○以上は67%');
+  eq(sum.counts.reduce(function (a, b) { return a + b; }, 0), 3, '内訳の合計はメンバー数');
+
+  // 偶数本のときの分位は補間せず、荒天側（上位）を採る。
+  // 安全側に倒れるほうを既定にしたいので、この挙動は意図的。
+  eq(R.percentile([2, 10], 0.5), 10, '2本しか無いときの中央値は荒天側を採る');
+
+  var allCalm = makeEns([{ wind: flat(1) }, { wind: flat(1.2) }]);
+  var calmSum = E.daySummary(allCalm, '2026-08-01', 4, 9, T4);
+  eq(calmSum.goodPct, 100, '全メンバーが穏やかなら ◎ 100%');
+  eq(calmSum.badPct, 0, '× は0%');
+  eq(E.daySummary(ens, '2099-01-01', 4, 9, T4), null, '無い日は null');
+
+  var bands = E.hourlyBands(ens, '2026-08-01');
+  eq(bands.p50.length, 24, '時刻別の帯は24要素');
+  eq(bands.max[6], 10, '6時の最大は10');
+  eq(bands.max[0], 2, '0時の最大は2');
+
+  section('アンサンブルの取得URL');
+  var eurl = E.url(37.2, 138.3, 16);
+  ok(eurl.indexOf('wind_speed_unit=ms') >= 0, '風速の単位は m/s を明示する（既定は km/h）');
+  ok(eurl.indexOf('ecmwf_ifs025') >= 0, 'ECMWF アンサンブルを指定');
+  ok(eurl.indexOf('timezone=Asia%2FTokyo') >= 0, 'タイムゾーンは日本時間');
+
+  // メンバー名の付き方（制御ラン＋member01..）が変わると全メンバーを取り落とす
+  var fake = { hourly: { time: ['2026-08-01T00:00'],
+    wind_speed_10m: [1], wind_speed_10m_member01: [2], wind_speed_10m_member02: [3],
+    wind_gusts_10m: [4], wind_gusts_10m_member01: [5], wind_gusts_10m_member02: [6] } };
+  var parsed = E.parse(fake);
+  eq(parsed.members, 3, '制御ランもメンバーとして数える');
+  eq(parsed.days['2026-08-01'].hours[0].wind.length, 3, '3本ぶんの風速が入る');
+
+  // -------------------------------------------------- 答え合わせ（C）
+
+  section('検証データの整合');
+  if (FF.verify && FF.verify.available()) {
+    var VD = FF.verify.data();
+    // 記録側（PowerShell）と判定側（JS）で判定窓の定義がずれると、
+    // 別の時間帯どうしを比べることになり、成績が意味を失う。
+    eq(VD.window.before, R.DEFAULTS.windowBeforeSunrise, '記録側の窓の開始が rating.js と一致');
+    eq(VD.window.after, R.DEFAULTS.windowAfterSunrise, '記録側の窓の終了が rating.js と一致');
+    eq(VD.window.period, 'morning', '記録は朝マヅメ帯で固定');
+    ok(VD.models && VD.models.length === 4, '4モデルぶん記録している');
+    ok(FF.verify.station() && FF.verify.station().name, '観測地点の表示名が引ける');
+    // アーカイブ由来はリード別の集計に混ぜてはいけない（実際より当たって見えるため）
+    var arcOnly = true;
+    FF.verify.seriesKeys().forEach(function (m) {
+      var a = FF.verify.cell(m, 'archive');
+      var all = FF.verify.cell(m, 'all');
+      if (a && a.n > 0 && all && all.n > 0 && all.n < a.n) arcOnly = false;
+    });
+    ok(arcOnly, 'アーカイブ由来は all に混ざっていない');
+    var prog = FF.verify.progress();
+    ok(prog.minUseful >= 30, '結論を出すには最低30件を要求している');
+    if (!prog.enough) {
+      eq(FF.verify.bestIn('d1_3'), null, 'サンプル不足のうちは順位を出さない');
+    }
+  } else {
+    ok(true, '検証データはまだ無い（収集前でも本体は動く）');
+  }
 
   section('日付ユーティリティ');
   eq(T.dateKey(new Date(2026, 6, 28)), '2026-07-28', 'dateKey はローカル日付');

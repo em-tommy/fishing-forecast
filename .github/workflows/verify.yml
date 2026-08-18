@@ -1,0 +1,54 @@
+name: Record forecasts and observations
+
+# モデルの答え合わせ用の記録。1日1回でよい。
+# 予報は「その日に発表されたもの」を記録したいので、朝のうちに回す。
+# 実測（AMeDAS）は前日ぶんが確定してから取るので、同じ実行で数日前まで遡って拾う。
+on:
+  schedule:
+    - cron: '0 22 * * *'   # UTC 22:00 = JST 07:00
+  workflow_dispatch:
+    inputs:
+      backfillDays:
+        description: '過去何日ぶんをアーカイブから埋めるか（0で埋めない）'
+        required: false
+        default: '0'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: verify
+  cancel-in-progress: false
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record
+        shell: pwsh
+        run: |
+          $back = 0
+          if ('${{ github.event.inputs.backfillDays }}') { $back = [int]'${{ github.event.inputs.backfillDays }}' }
+          ./tools/Record-Forecast.ps1 -ObsDays 5 -BackfillDays $back
+
+      - name: Commit if changed
+        shell: bash
+        run: |
+          if [ -z "$(git status --porcelain data)" ]; then
+            echo "変化なし"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data
+          git commit -m "予報と実測の記録を追加"
+          # 他のワークフロー（潮汐・Yahoo）と同時に走ると押し負けるので、少し待って積み直す
+          for i in 1 2 3; do
+            if git push; then exit 0; fi
+            sleep $((i * 10))
+            git pull --rebase --autostash origin main || exit 1
+          done
+          echo "push に3回失敗しました" >&2
+          exit 1

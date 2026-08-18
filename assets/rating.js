@@ -50,8 +50,34 @@
 
     // モデル一致度（風速の標準偏差 m/s）
     confidenceHigh: 1.0,
-    confidenceMid: 2.0
+    confidenceMid: 2.0,
+
+    // 複数モデルの値をどう1つに束ねるか。MODEL_AGG のキー。
+    modelAgg: 'median'
   };
+
+  /**
+   * 複数モデルの風速・突風を1つの代表値にする方法。
+   *
+   * 中央値は「最も確からしい値」を出すが、2馬力3mの船で本当に効くのは
+   * 外したときにどれだけ荒れるか。荒天側に寄せて判断したい日のために選べるようにしてある。
+   * 波高は単一ソース（Marine API）なのでここは効かない。風向も循環量なので別扱い。
+   */
+  var MODEL_AGG = {
+    median: {
+      key: 'median', label: '中央値', short: '中央',
+      desc: 'モデルの真ん中の値を採る。極端な1本に引きずられない。既定。'
+    },
+    high: {
+      key: 'high', label: '悪いほうに寄せる', short: '上側',
+      desc: '荒れる side から25%の位置の値を採る。外れ値1本では動かないが、複数が荒天を示すと効く。'
+    },
+    worst: {
+      key: 'worst', label: '最も荒れる予報', short: '最悪',
+      desc: '一番荒れるモデルに合わせる。1本でも荒天予報があれば見送る、という判断。'
+    }
+  };
+  var MODEL_AGG_ORDER = ['median', 'high', 'worst'];
 
   var GRADES = {
     3: { symbol: '◎', label: '出船適', key: 'good' },
@@ -98,6 +124,10 @@
       label: '午後に吹き上がり', tone: 'warn', effect: '判定は下げない',
       desc: '朝は穏やかでも昼から強まる日。早上がりを前提に組み立てること。'
     },
+    strictAgg: {
+      label: '荒天側で判定', tone: 'info', effect: '判定が中央値より辛くなる',
+      desc: '代表値の取り方を中央値以外にしている日。設定を戻すと判定も戻る。'
+    },
     noData: {
       label: 'データなし', tone: '', effect: '判定しない',
       desc: 'その日の気象データが取れていない。'
@@ -143,6 +173,28 @@
     v.sort(function (a, b) { return a - b; });
     var m = Math.floor(v.length / 2);
     return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+  }
+
+  /**
+   * 昇順に並べた有効値の p 分位（0〜1）。補間せず最も近い順位の実値を返す。
+   * 補間値は「どのモデルの予報でもない数字」になり、根拠を示せなくなるため。
+   */
+  function percentile(values, p) {
+    var v = compact(values);
+    if (!v.length) return null;
+    v.sort(function (a, b) { return a - b; });
+    var i = Math.round((v.length - 1) * p);
+    return v[Math.max(0, Math.min(v.length - 1, i))];
+  }
+
+  /**
+   * 複数モデルの値を1つに束ねる。風速・突風のように「大きいほど悪い」量だけに使うこと。
+   * @param {string} mode MODEL_AGG のキー
+   */
+  function combineModels(values, mode) {
+    if (mode === 'worst') return maxOf(values);
+    if (mode === 'high') return percentile(values, 0.75);
+    return median(values);
   }
 
   /** 母集団標準偏差。有効値が 2 未満なら null（ばらつきを語れない）。 */
@@ -264,6 +316,7 @@
     var T = Object.assign({}, DEFAULTS, thresholds || {});
     var O = Object.assign({ checkDirection: true, period: 'morning' }, opts || {});
     var period = PERIODS[O.period] ? O.period : 'morning';
+    var agg = MODEL_AGG[T.modelAgg] ? T.modelAgg : 'median';
 
     var sunrise = isNum(day.sunrise) ? day.sunrise : 5;
     var sunset = isNum(day.sunset) ? day.sunset : 18;
@@ -285,12 +338,14 @@
       usedHours.push(hr);
 
       var windVals = values(rec.wind);
-      var w = median(windVals);
+      var w = combineModels(windVals, agg);
       if (w !== null) winds.push(w);
+      // ばらつきは代表値の取り方に関わらず生の全モデルから測る。
+      // 荒天側に寄せたせいで「一致度が上がった」ように見えてはいけない。
       var sd = stdev(windVals);
       if (sd !== null) spreads.push(sd);
 
-      var g = median(values(rec.gust));
+      var g = combineModels(values(rec.gust), agg);
       if (g !== null) gusts.push(g);
 
       var d = circularMeanDeg(values(rec.dir));
@@ -333,6 +388,13 @@
     }
 
     var grade = Math.min.apply(null, levels);
+
+    // 代表値を荒天側に寄せているときは、その旨を必ず残す。
+    // 中央値のつもりで数字を見ていると、なぜ辛い判定なのか分からなくなるため。
+    if (agg !== 'median') {
+      flags.push('strictAgg');
+      reasons.push('モデルの代表値は「' + MODEL_AGG[agg].label + '」で計算（設定タブで変更可）');
+    }
 
     // 判定の根拠を残す（数字だけ出しても信用できないため）
     if (isNum(maxWind)) {
@@ -403,7 +465,7 @@
     var afternoon = [];
     for (var k = 12; k <= 16 && k < day.hours.length; k++) {
       if (day.hours[k]) {
-        var pm = median(values(day.hours[k].wind));
+        var pm = combineModels(values(day.hours[k].wind), agg);
         if (pm !== null) afternoon.push(pm);
       }
     }
@@ -441,6 +503,7 @@
         from: round(from, 2), to: round(to, 2), hours: usedHours,
         period: period, label: periodInfo.label, short: periodInfo.short
       },
+      modelAgg: agg,
       metrics: {
         maxWind: round(maxWind, 1),
         minWind: round(winds.length ? Math.min.apply(null, winds) : null, 1),
@@ -589,8 +652,12 @@
     FLAGS: FLAGS,
     PERIODS: PERIODS,
     PERIOD_ORDER: PERIOD_ORDER,
+    MODEL_AGG: MODEL_AGG,
+    MODEL_AGG_ORDER: MODEL_AGG_ORDER,
     windowFor: windowFor,
     median: median,
+    percentile: percentile,
+    combineModels: combineModels,
     stdev: stdev,
     maxOf: maxOf,
     circularMeanDeg: circularMeanDeg,

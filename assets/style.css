@@ -315,6 +315,49 @@ section[hidden] { display: none; }
 .tooltip .t-row i { width: 9px; height: 9px; border-radius: 2px; }
 .tooltip .t-row b { margin-left: auto; font-variant-numeric: tabular-nums; }
 
+/* ------------------------------------------------- アンサンブル（51本の内訳） */
+
+.ens-legend { margin: 8px 0 4px; }
+.ens-list { display: grid; gap: 3px; }
+.ens-row {
+  display: grid;
+  grid-template-columns: 4.6em 1fr auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 6px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  text-align: left;
+  font-size: .8rem;
+  cursor: pointer;
+}
+.ens-row:hover { background: var(--surface-sunk); }
+.ens-row[aria-pressed='true'] { border-color: var(--s1); background: var(--surface-sunk); }
+.ens-date { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.ens-bar {
+  display: flex;
+  gap: 2px;            /* 隣り合う色が地続きにならないよう必ず隙間を空ける */
+  height: 13px;
+  min-width: 60px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--surface-sunk);
+}
+.ens-bar .seg { display: block; height: 100%; }
+.ens-bar .seg-good { background: var(--good); }
+.ens-bar .seg-fair { background: var(--warning); }
+.ens-bar .seg-marginal { background: var(--serious); }
+.ens-bar .seg-bad { background: var(--critical); }
+.ens-bar.empty { background: repeating-linear-gradient(45deg, var(--surface-sunk) 0 4px, transparent 4px 8px); }
+.ens-num { font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--text-secondary); }
+.ens-num b { color: var(--text-primary); }
+.ens-num b.hot { color: var(--critical); }
+
+/* アンサンブルの分位帯。線より薄くして背面に置く */
+.chart .ribbon { opacity: .18; }
+
 /* ---------------------------------------------------------------- テーブル */
 
 .tbl-wrap { overflow-x: auto; }
@@ -371,6 +414,24 @@ ul.reasons li { margin: 2px 0; }
 .setting .val { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 4.5em; text-align: right; }
 .setting input[type='range'] { grid-column: 1 / -1; width: 100%; accent-color: var(--s1); }
 .setting .hint { grid-column: 1 / -1; font-size: .76rem; color: var(--text-muted); margin-top: -4px; }
+
+/* 選択肢（代表値の取り方など）。屋外でも押せるように行全体を当たり判定にする */
+.choices { display: grid; gap: 6px; margin-top: 10px; }
+.choice {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px;
+  align-items: start;
+  padding: 10px 12px;
+  border: 1px solid var(--grid);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: .88rem;
+}
+.choice:hover { background: var(--surface-sunk); }
+.choice input { accent-color: var(--s1); margin-top: 2px; }
+.choice .hint { font-size: .76rem; color: var(--text-muted); }
+.choice:has(input:checked) { border-color: var(--s1); background: var(--surface-sunk); }
 
 /* ---------------------------------------------------------------- 状態表示 */
 
