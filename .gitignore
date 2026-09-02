@@ -9,3 +9,32 @@ Desktop.ini
 *.log
 *.tmp
 __tmp_*.html
+# --- secrets (never commit) ---
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.pfx
+*.p12
+*token*.json
+*.token.json
+secrets/
+credentials*.json
+# --- python ---
+.venv/
+venv/
+__pycache__/
+*.pyc
+# --- node ---
+node_modules/
+# --- claude / local state ---
+.claude/
+# --- bundled tools / build / generated ---
+.tools/
+dist/
+build/
+output/
+# --- os ---
+.DS_Store
+Thumbs.db
