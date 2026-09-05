@@ -19,6 +19,7 @@
   //   - tide, jma, yahoo … それぞれ別ソースの地点コード。近い順ではなく代表性で選ぶ
   var REGIONS = [
     { id: 'joetsu', name: '上越' },
+    { id: 'yokohama', name: '横浜' },
     { id: 'miura', name: '三浦半島' },
     { id: 'tokyobay', name: '東京湾' }
   ];
@@ -66,6 +67,19 @@
       // 金田湾に面した東〜東南東向き。外洋のうねりが入る。
       profile: facing(101.25),
       note: '金田湾。東〜南東の外洋うねりが入る。'
+    },
+    {
+      id: 'negishi', name: '横浜 根岸湾', short: '根岸湾', kind: 'boat',
+      region: 'yokohama',
+      // 指定された座標は陸ではなく海上（国土地理院の逆ジオコーディングが住所を返さない）。
+      // 直江津の「第三堤防沖」と同じく、出艇地ではなく釣り座の位置として持っている。
+      lat: 35.379788, lon: 139.680464, tide: 'HM',
+      jma: { pref: '140000', area: '140010' }, // 神奈川県 / 東部
+      yahoo: '14108',                          // 横浜市金沢区
+      target: 'アジ・シロギス・タチウオ',
+      // 帰る岸（根岸〜金沢）は東北東を向いている。東寄りの風が岸に押し付ける。
+      profile: facing(67.5),
+      note: '東京湾内。吹送距離が短く波は小さいが、波浪の格子点は約10km沖の値になる。'
     },
     { id: 'wakasu', name: '若洲海浜公園', short: '若洲', kind: 'shore', region: 'tokyobay', lat: 35.618, lon: 139.822, tide: 'TK', jma: { pref: '130000', area: '130010' }, target: 'アジ・タコ' },
     { id: 'ogishima', name: '東扇島西公園', short: '東扇島西', kind: 'shore', region: 'tokyobay', lat: 35.494, lon: 139.757, tide: 'QS', jma: { pref: '140000', area: '140010' }, target: 'アジ・タコ' },

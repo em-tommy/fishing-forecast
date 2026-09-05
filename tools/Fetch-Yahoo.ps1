@@ -44,10 +44,15 @@ if ([string]::IsNullOrWhiteSpace($OutDir)) {
     $OutDir = Join-Path $root '..\data'
 }
 
-# Yahoo point pages. 15222 = Joetsu city (the launch area), 15482 = Tsunan town.
+# Yahoo point pages. One per boat spot in assets/spots.js (plus Tsunan, kept as a
+# second opinion for the Joetsu area). When a spot is added there with a 'yahoo'
+# code, add the matching page here or the Yahoo column stays empty for that spot.
 $Points = @(
-    [pscustomobject]@{ Code = '15222'; Ascii = 'Joetsu'; Url = 'https://weather.yahoo.co.jp/weather/jp/15/5430/15222.html' }
-    [pscustomobject]@{ Code = '15482'; Ascii = 'Tsunan'; Url = 'https://weather.yahoo.co.jp/weather/jp/15/5420/15482.html' }
+    [pscustomobject]@{ Code = '15222'; Ascii = 'Joetsu';   Url = 'https://weather.yahoo.co.jp/weather/jp/15/5430/15222.html' }
+    [pscustomobject]@{ Code = '15482'; Ascii = 'Tsunan';   Url = 'https://weather.yahoo.co.jp/weather/jp/15/5420/15482.html' }
+    [pscustomobject]@{ Code = '14201'; Ascii = 'Yokosuka'; Url = 'https://weather.yahoo.co.jp/weather/jp/14/4610/14201.html' }
+    [pscustomobject]@{ Code = '14210'; Ascii = 'Miura';    Url = 'https://weather.yahoo.co.jp/weather/jp/14/4610/14210.html' }
+    [pscustomobject]@{ Code = '14108'; Ascii = 'Kanazawa'; Url = 'https://weather.yahoo.co.jp/weather/jp/14/4610/14108.html' }
 )
 
 # The page labels dates in Japanese. Build those characters from code points so this
