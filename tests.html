@@ -21,6 +21,7 @@
 <!-- tide-data:end -->
 <!-- Yahoo!天気の週間予報（tools/Fetch-Yahoo.ps1 が生成）。無くてもアプリは動く -->
 <script src="data/yahoo.js"></script>
+<script src="assets/spots.js"></script>
 <script src="assets/tide.js"></script>
 <script src="assets/rating.js"></script>
 <script src="assets/ensemble.js"></script>
@@ -454,10 +455,18 @@
   ok(T.daySummary('QS', '2030-01-01') === null, '範囲外の日付は null を返す');
   ok(T.daySummary('XX', '2026-01-01') === null, '未知の地点は null を返す');
 
+  // 潮汐は年ごとのファイルを重ねて読む。年をまたぐ釣行のために2027年分も読んでいるので、
+  // 「365日」ではなく「読み込んだ年数ぶん連続していること」を確かめる。
   var cov = T.coverage('QS');
-  eq(cov.count, 365, '横浜は365日分');
-  eq(cov.first, '2026-01-01', '開始日');
-  eq(cov.last, '2026-12-31', '終了日');
+  var years = (window.TIDE_DATA && window.TIDE_DATA.years) ? window.TIDE_DATA.years.slice().sort() : [2026];
+  eq(cov.first, years[0] + '-01-01', '開始日は最初の年の元日');
+  eq(cov.last, years[years.length - 1] + '-12-31', '終了日は最後の年の大晦日');
+  ok(cov.count >= 365 * years.length, '読み込んだ年数ぶんの日数がある');
+
+  eq(T.STATION_NAMES.QN, '横須賀', '横須賀の潮汐地点が読める');
+  ok(T.coverage('QN') && T.coverage('QN').count >= 365, '横須賀も年ぶんの潮位がある');
+  var qn = T.daySummary('QN', '2026-08-15');
+  ok(qn && qn.hourly.length === 24, '横須賀の毎時潮位が24点ある');
 
   section('潮位の補間');
   eq(Math.round(T.levelAt('QS', '2026-01-01', 0)), qs.hourly[0], '整数時ちょうどは毎時値と一致');
@@ -639,6 +648,69 @@
   eq(T.dateKey(new Date(2026, 6, 28)), '2026-07-28', 'dateKey はローカル日付');
   eq(T.shiftDateKey('2026-12-31', 1), '2027-01-01', '年またぎのシフト');
   eq(T.shiftDateKey('2026-03-01', -1), '2026-02-28', '月またぎのシフト');
+
+  section('釣り場マスタ');
+  var S = FF.spots;
+  ok(S && S.SPOTS.length >= 8, '釣り場が読み込めている');
+  ok(S.BOATS.length >= 3, '出船地点が3か所以上ある');
+
+  // 追加のたびに壊れやすいところをまとめて検査する。
+  // 釣り場は今後も増えるので、1件ずつの期待値ではなく全件に対する条件で書く。
+  var ids = {};
+  S.SPOTS.forEach(function (sp) {
+    ok(!ids[sp.id], '釣り場IDが重複していない: ' + sp.id);
+    ids[sp.id] = true;
+    ok(!!S.regionName(sp.region) && S.regionName(sp.region) !== sp.region,
+      sp.short + ' の region が REGIONS にある');
+    ok(!!T.STATION_NAMES[sp.tide], sp.short + ' の潮汐地点が存在する: ' + sp.tide);
+    ok(T.coverage(sp.tide) !== null, sp.short + ' の潮位データが読める');
+    ok(sp.lat > 20 && sp.lat < 50 && sp.lon > 120 && sp.lon < 150,
+      sp.short + ' の座標が日本の範囲にある');
+    ok(sp.kind === 'boat' || sp.kind === 'shore', sp.short + ' の種別が boat/shore');
+  });
+  S.BOATS.forEach(function (sp) {
+    ok(sp.profile && typeof sp.profile.onshoreFrom === 'number' && typeof sp.profile.onshoreTo === 'number',
+      sp.short + ' に吹き付け風の方位がある');
+  });
+
+  // 岸の向きから危険風向を作る計算。直江津の既定値を再現できることを基準にする。
+  var f0 = S.facing(0);
+  eq(f0.onshoreFrom, 292.5, '正面Nの吹き付け風の開始は直江津の既定値と同じ');
+  eq(f0.onshoreTo, 67.5, '正面Nの吹き付け風の終了も同じ');
+  eq(f0.offshoreFrom, 112.5, '正面Nの沖出しの開始も同じ');
+  eq(f0.offshoreTo, 247.5, '正面Nの沖出しの終了も同じ');
+  var f90 = S.facing(90);
+  eq(f90.onshoreFrom, 22.5, '正面Eなら吹き付け風はNNEから');
+  eq(f90.onshoreTo, 157.5, '正面Eなら吹き付け風はSSEまで');
+
+  // 実際の海岸の向きが判定に効いているか。走水（東北東向き）に東風が当たり、
+  // 直江津（北向き）の設定では同じ東風が吹き付けにならないこと。
+  var hashi = S.byId('hashirimizu');
+  var nao = S.byId('naoetsu');
+  ok(R.inDirRange(90, hashi.profile.onshoreFrom, hashi.profile.onshoreTo),
+    '走水では東風が吹き付け風になる');
+  ok(!R.inDirRange(90, nao.profile.onshoreFrom, nao.profile.onshoreTo),
+    '直江津では東風は吹き付け風にならない');
+  ok(R.inDirRange(315, nao.profile.onshoreFrom, nao.profile.onshoreTo),
+    '直江津では北西風が吹き付け風になる');
+  ok(!R.inDirRange(315, hashi.profile.onshoreFrom, hashi.profile.onshoreTo),
+    '走水では北西風は吹き付け風にならない');
+
+  var miura = S.byId('miurakaigan');
+  ok(R.inDirRange(112.5, miura.profile.onshoreFrom, miura.profile.onshoreTo),
+    '三浦海岸では東南東風が吹き付け風になる');
+  ok(!R.inDirRange(270, miura.profile.onshoreFrom, miura.profile.onshoreTo),
+    '三浦海岸では西風は吹き付け風にならない');
+
+  // しきい値の重ね順（既定 -> 全体 -> 釣り場の profile -> 釣り場ごとの上書き）。
+  // 岸の向きが全体設定に負けると、最初の設計ミス（直江津の北風ペナルティが三浦に出る）に戻る。
+  section('しきい値の重ね順');
+  var globalSettings = Object.assign({}, R.DEFAULTS, { goodWind: 5.0, onshoreFrom: 999 });
+  var eff = Object.assign({}, globalSettings, hashi.profile, { goodWind: 3.0 });
+  eq(eff.goodWind, 3.0, '釣り場ごとの上書きが全体設定に勝つ');
+  eq(eff.onshoreFrom, hashi.profile.onshoreFrom, '岸の向きは全体設定に上書きされない');
+  var eff2 = Object.assign({}, globalSettings, hashi.profile);
+  eq(eff2.goodWind, 5.0, '釣り場で上書きしていない項目は全体設定を継承する');
 
   // ---------------------------------------------------------------- 集計
 

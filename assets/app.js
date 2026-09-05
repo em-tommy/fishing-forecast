@@ -33,20 +33,11 @@
     return spot.kind === 'boat' ? MODELS : MODELS_LITE;
   }
 
-  var SPOTS = [
-    {
-      id: 'naoetsu', name: '直江津 第三堤防沖', short: '直江津', kind: 'boat',
-      lat: 37.219960, lon: 138.278409, tide: 'T3',
-      jma: { pref: '150000', area: '150030' }, // 新潟県 / 上越
-      yahoo: '15222',                          // Yahoo!天気の上越市
-      target: '尺アジ・マダイ・青物'
-    },
-    { id: 'wakasu', name: '若洲海浜公園', short: '若洲', kind: 'shore', lat: 35.618, lon: 139.822, tide: 'TK', jma: { pref: '130000', area: '130010' }, target: 'アジ・タコ' },
-    { id: 'ogishima', name: '東扇島西公園', short: '東扇島西', kind: 'shore', lat: 35.494, lon: 139.757, tide: 'QS', jma: { pref: '140000', area: '140010' }, target: 'アジ・タコ' },
-    { id: 'fureyu', name: 'ふれーゆ裏', short: 'ふれーゆ裏', kind: 'shore', lat: 35.475, lon: 139.700, tide: 'QS', jma: { pref: '140000', area: '140010' }, target: 'アジ・タコ' },
-    { id: 'daikoku', name: '大黒ふ頭海釣り施設', short: '大黒ふ頭', kind: 'shore', lat: 35.463, lon: 139.679, tide: 'QS', jma: { pref: '140000', area: '140010' }, target: 'アジ・タコ' },
-    { id: 'honmoku', name: '本牧海づり施設', short: '本牧', kind: 'shore', lat: 35.418, lon: 139.668, tide: 'QS', jma: { pref: '140000', area: '140010' }, target: 'アジ・タコ' }
-  ];
+  // 釣り場マスタは assets/spots.js。増えるのはあちらだけで、ここは触らない。
+  var REGIONS = FF.spots.REGIONS;
+  var SPOTS = FF.spots.SPOTS;
+  var BOATS = FF.spots.BOATS;
+  var spotById = FF.spots.byId;
 
   // 現地で「よく当たる」と言われる Yahoo天気は、日本気象協会経由で気象庁の予報を配信している。
   // アプリからは上流の気象庁を直接使うが、いつもの画面で確かめたいはずなのでリンクも置く。
@@ -73,6 +64,8 @@
   var CACHE_TTL_MS = 30 * 60 * 1000;
   var CACHE_PREFIX = 'ff:cache:v1:';
   var SETTINGS_KEY = 'ff:settings:v1';
+  var SPOT_SETTINGS_KEY = 'ff:spotsettings:v1';
+  var BOAT_SPOT_KEY = 'ff:boatspot';
   var THEME_KEY = 'ff:theme';
   // 判定する時間帯はタブごとに持つ。出船は朝、東京湾のアジは夕方と、狙う時間が違うため。
   var PERIOD_KEY = { boat: 'ff:period:boat', shore: 'ff:period:shore' };
@@ -149,6 +142,31 @@
     var diff = {};
     Object.keys(s).forEach(function (k) { if (s[k] !== R.DEFAULTS[k]) diff[k] = s[k]; });
     store.set(SETTINGS_KEY, diff);
+  }
+
+  /**
+   * 釣り場ごとのしきい値。
+   *
+   * 重ねる順番は 既定 → 全体設定 → 釣り場の profile → 釣り場ごとの上書き。
+   * profile を全体設定より後に置くのは、岸の向きが「その海岸の事実」であって
+   * 利用者の好みではないため。向きまで全体設定で上書きできると、
+   * 直江津の北風ペナルティが三浦にも適用されるという最初の設計ミスに戻る。
+   * それでも現地で違うと感じたときのために、釣り場ごとの上書きが最後に来る。
+   */
+  function loadSpotSettings() {
+    return store.get(SPOT_SETTINGS_KEY, {});
+  }
+  function saveSpotSettings(all) {
+    store.set(SPOT_SETTINGS_KEY, all);
+  }
+  function thresholdsFor(spot) {
+    var over = (state.spotSettings && state.spotSettings[spot.id]) || {};
+    return Object.assign({}, state.settings, spot.profile || {}, over);
+  }
+  /** その釣り場で全体設定から外れている項目の数（UI のバッジ用） */
+  function overrideCount(spot) {
+    var over = (state.spotSettings && state.spotSettings[spot.id]) || {};
+    return Object.keys(over).length;
   }
 
   // ================================================================ 取得
@@ -702,24 +720,192 @@
 
   var state = {
     settings: loadSettings(),
+    spotSettings: loadSpotSettings(),  // spotId -> 全体設定からの差分
     period: {
       boat: store.get(PERIOD_KEY.boat, 'morning'),
       shore: store.get(PERIOD_KEY.shore, 'morning')
     },
     bundles: {},      // spotId -> bundle
     jma: {},          // spotId -> 気象庁の公式予報
-    ensemble: null,   // 直江津のアンサンブル（51本）。出船判断にしか使わない
+    // アンサンブル（51本）は1地点あたり約50KBある。出船地点が増えても取得量が
+    // 増えないよう、選択中の1か所だけを都度取りにいく。spotId -> parsed
+    ensembles: {},
+    ensembleLoading: null,
     results: {},      // spotId -> [dayResult]
+    boatSpot: pickInitialBoatSpot(),
     selectedDate: null,
     shoreDate: null,
     showModels: false,
     errors: []
   };
 
+  function pickInitialBoatSpot() {
+    var saved = store.get(BOAT_SPOT_KEY, null);
+    for (var i = 0; i < BOATS.length; i++) if (BOATS[i].id === saved) return saved;
+    return BOATS.length ? BOATS[0].id : null;
+  }
+  /** いま出船タブが見ている釣り場 */
+  function currentBoat() {
+    return spotById(state.boatSpot) || BOATS[0] || null;
+  }
+  /** 選択中の釣り場の判定結果。未取得なら null */
+  function boatResults() {
+    var b = currentBoat();
+    return b ? (state.results[b.id] || null) : null;
+  }
+  function boatBundle() {
+    var b = currentBoat();
+    return b ? (state.bundles[b.id] || null) : null;
+  }
+  /** 選択中の釣り場のアンサンブル。未取得なら null */
+  function currentEnsemble() {
+    var b = currentBoat();
+    return b ? (state.ensembles[b.id] || null) : null;
+  }
+
+  /**
+   * 出船地点の横断比較（行=釣り場 / 列=日）。
+   *
+   * 釣り場が1か所のときの問いは「いつ行けるか」だったが、複数になると
+   * 「今週どこなら出せるか」が先に来る。ここでは記号だけを敷き詰め、数値は出さない。
+   * 比べたいのは各地点の風速そのものではなく、空いている枠がどこにあるかだから。
+   * 釣り場が増えても行が増えるだけで、横スクロールは日付方向にしか発生しない。
+   */
+  function renderMatrix() {
+    var host = $('#matrix');
+    if (!host) return;
+    host.innerHTML = '';
+    if (BOATS.length < 2) return;  // 1か所しかないなら表にする意味がない
+
+    // 列（日付）は取得済みのどれかの地点から採る。地点ごとに日数がずれることはない。
+    var dates = null;
+    for (var i = 0; i < BOATS.length && !dates; i++) {
+      var r = state.results[BOATS[i].id];
+      if (r && r.length) dates = r.map(function (x) { return x.date; });
+    }
+    if (!dates) return;
+
+    var card = el('section', 'card');
+    card.appendChild(el('h2', null, 'どこなら出せるか'));
+    card.insertAdjacentHTML('beforeend',
+      '<div class="sub">' + esc(R.PERIODS[state.period.boat].label) +
+      '帯の判定を出船地点ごとに並べたもの。記号を押すとその釣り場のその日を開きます。</div>');
+
+    var wrap = el('div', 'tbl-wrap');
+    var tbl = el('table', 'matrix');
+    var head = '<thead><tr><th class="sticky-col">釣り場</th>';
+    dates.forEach(function (d) {
+      var dt = TIDE.parseDateKey(d);
+      var cls = dt.getDay() === 0 ? 'sun' : dt.getDay() === 6 ? 'sat' : '';
+      head += '<th class="' + cls + '"><span class="mx-dow">' + DOW[dt.getDay()] + '</span>' +
+        '<span class="mx-md">' + (dt.getMonth() + 1) + '/' + dt.getDate() + '</span></th>';
+    });
+    head += '</tr></thead>';
+    tbl.innerHTML = head;
+
+    var body = el('tbody');
+    REGIONS.forEach(function (rg) {
+      var inRegion = BOATS.filter(function (b) { return b.region === rg.id; });
+      if (!inRegion.length) return;
+      var rh = el('tr', 'mx-region');
+      rh.innerHTML = '<th class="sticky-col" colspan="1">' + esc(rg.name) + '</th>' +
+        '<td colspan="' + dates.length + '"></td>';
+      body.appendChild(rh);
+
+      inRegion.forEach(function (spot) {
+        var res = state.results[spot.id];
+        var tr = el('tr');
+        if (spot.id === state.boatSpot) tr.className = 'is-selected';
+        var cells = '<th class="sticky-col mx-name">' + esc(spot.short) + '</th>';
+        dates.forEach(function (d) {
+          if (!res) { cells += '<td class="mx-cell"><span class="muted">…</span></td>'; return; }
+          var day = null;
+          for (var k = 0; k < res.length; k++) if (res[k].date === d) { day = res[k]; break; }
+          if (!day) { cells += '<td class="mx-cell"><span class="muted">—</span></td>'; return; }
+          var gi = day.gradeInfo || R.NO_DATA;
+          var sel = (spot.id === state.boatSpot && d === state.selectedDate) ? ' is-on' : '';
+          cells += '<td class="mx-cell"><button type="button" class="mx-btn grade-' + gi.key + sel +
+            '" data-spot="' + esc(spot.id) + '" data-date="' + esc(d) + '" title="' +
+            esc(spot.short + ' ' + dateLabel(d) + ' ' + gi.label) + '">' + gi.symbol + '</button></td>';
+        });
+        tr.innerHTML = cells;
+        body.appendChild(tr);
+      });
+    });
+    tbl.appendChild(body);
+    wrap.appendChild(tbl);
+    card.appendChild(wrap);
+
+    card.addEventListener('click', function (ev) {
+      var b = ev.target.closest ? ev.target.closest('.mx-btn') : null;
+      if (!b) return;
+      state.selectedDate = b.getAttribute('data-date');
+      selectBoat(b.getAttribute('data-spot'));
+    });
+
+    var notLoaded = BOATS.filter(function (b) { return !state.results[b.id]; });
+    if (notLoaded.length) {
+      card.insertAdjacentHTML('beforeend',
+        '<div class="hint" style="margin-top:8px">取得中: ' +
+        esc(notLoaded.map(function (b) { return b.short; }).join('・')) +
+        '。見ている釣り場を先に取るため、他は後回しになります。</div>');
+    }
+    host.appendChild(card);
+  }
+
+  /** 釣り場の切り替え。アンサンブルはその場で取りにいく（30分キャッシュ付き）。 */
+  function selectBoat(id) {
+    if (!spotById(id) || id === state.boatSpot) {
+      renderMatrix(); renderBoatPicker(); renderStrip(); renderDetail();
+      return;
+    }
+    state.boatSpot = id;
+    store.set(BOAT_SPOT_KEY, id);
+    var spot = currentBoat();
+    // 選んだ地点にその日付が無い場合に備えて、無ければ先頭日に寄せる
+    var res = state.results[id];
+    if (res && res.length && !res.some(function (r) { return r.date === state.selectedDate; })) {
+      state.selectedDate = res[0].date;
+    }
+    renderMatrix(); renderBoatPicker(); renderStrip(); renderDetail();
+    renderEnsemble(); renderOfficialPanel(); renderCoverageNote();
+    if (spot && !state.ensembles[spot.id]) {
+      loadEnsemble(spot).then(function () { renderEnsemble(); renderDetail(); showErrors(); });
+    }
+  }
+
+  /** 釣り場セレクタ。地域でまとめるので、増えても縦に伸びるだけで済む。 */
+  function renderBoatPicker() {
+    var host = $('#boat-picker');
+    if (!host) return;
+    host.innerHTML = '';
+    if (BOATS.length < 2) return;
+
+    var box = el('div', 'picker');
+    REGIONS.forEach(function (rg) {
+      var inRegion = BOATS.filter(function (b) { return b.region === rg.id; });
+      if (!inRegion.length) return;
+      var grp = el('div', 'picker-group');
+      grp.appendChild(el('span', 'picker-label', rg.name));
+      inRegion.forEach(function (spot) {
+        var btn = el('button', 'chip' + (spot.id === state.boatSpot ? ' is-on' : ''));
+        btn.type = 'button';
+        btn.setAttribute('aria-pressed', String(spot.id === state.boatSpot));
+        var n = overrideCount(spot);
+        btn.innerHTML = esc(spot.short) +
+          (n ? '<span class="pill" title="この釣り場だけの設定が' + n + '項目あります">設定' + n + '</span>' : '');
+        btn.addEventListener('click', function () { selectBoat(spot.id); });
+        grp.appendChild(btn);
+      });
+      box.appendChild(grp);
+    });
+    host.appendChild(box);
+  }
+
   function renderWindows() {
     var host = $('#windows');
     host.innerHTML = '';
-    var results = state.results.naoetsu;
+    var results = boatResults();
     if (!results) return;
 
     host.appendChild(periodPicker('boat'));
@@ -860,7 +1046,7 @@
   function renderStrip() {
     var host = $('#strip');
     host.innerHTML = '';
-    var results = state.results.naoetsu;
+    var results = boatResults();
     if (!results) return;
 
     var h = el('h2', null, '16日間');
@@ -903,8 +1089,8 @@
   function renderDetail() {
     var host = $('#detail');
     host.innerHTML = '';
-    var results = state.results.naoetsu;
-    var bundle = state.bundles.naoetsu;
+    var results = boatResults();
+    var bundle = boatBundle();
     if (!results || !bundle) return;
 
     var date = state.selectedDate || results[0].date;
@@ -920,7 +1106,7 @@
     var head = el('div');
     head.innerHTML =
       '<h2 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
-      esc(dateLabel(date)) + ' 直江津 第三堤防沖 ' + gradeBadge(res) +
+      esc(dateLabel(date)) + ' ' + esc(currentBoat() ? currentBoat().name : '') + ' ' + gradeBadge(res) +
       '<span class="sub">モデル一致度 ' + esc(res.confidence.label) +
       (isNum(res.confidence.sd) ? '（風速のばらつき ±' + fmt(res.confidence.sd, 2) + ' m/s）' : '') +
       '</span></h2>';
@@ -1028,7 +1214,8 @@
     chartHost.insertAdjacentHTML('beforeend', '<div class="chart-wrap">' + windChart.svg + '</div>');
 
     // アンサンブル（51本のばらつき）。決定論の4モデルとは意味が違うので別パネルにする。
-    var bands = state.ensemble ? FF.ensemble.hourlyBands(state.ensemble, res.date) : null;
+    var ens = currentEnsemble();
+    var bands = ens ? FF.ensemble.hourlyBands(ens, res.date) : null;
     if (bands && bands.p50.some(isNum)) {
       var ensChart = lineChart({
         title: 'アンサンブルのばらつき', unit: ' m/s', decimals: 1, height: 140,
@@ -1088,7 +1275,8 @@
       });
       charts.push(tideChart);
       chartHost.insertAdjacentHTML('beforeend',
-        '<h3 style="font-size:.85rem;margin:14px 0 2px">潮位（気象庁 直江津）<span class="muted"> cm</span></h3>');
+        '<h3 style="font-size:.85rem;margin:14px 0 2px">潮位（気象庁 ' +
+      esc(TIDE.STATION_NAMES[currentBoat() ? currentBoat().tide : ''] || '') + '）<span class="muted"> cm</span></h3>');
       chartHost.insertAdjacentHTML('beforeend', '<div class="chart-wrap">' + tideChart.svg + '</div>');
     }
 
@@ -1247,8 +1435,9 @@
       '確度 A=高い / B=やや高い / C=低い。C の日は予報が変わりやすいので直前に見直してください。'
     ];
     if (hasYahoo) {
-      var yp = FF.yahoo.point(SPOTS[0].yahoo);
-      var cov = FF.yahoo.coverage(SPOTS[0].yahoo);
+      var ySpot = currentBoat();
+      var yp = ySpot && ySpot.yahoo ? FF.yahoo.point(ySpot.yahoo) : null;
+      var cov = ySpot && ySpot.yahoo ? FF.yahoo.coverage(ySpot.yahoo) : null;
       noteBits.push('Yahoo天気は' + (yp ? yp.name : '') +'の週間予報（明後日から6日分）。' +
         (yp && yp.announced ? yp.announced.slice(5, 16).replace('T', ' ') + ' 発表、' : '') +
         '取得 ' + (FF.yahoo.fetchedAt() || '—').slice(5, 16).replace('T', ' ') + '。' +
@@ -1576,55 +1765,121 @@
       '◎と×の中間が○、×の直前が△になります。変更はこの端末のブラウザに保存されます。';
     card.appendChild(lead);
 
+    // 編集対象。「全体」は全釣り場の土台で、釣り場を選ぶとその場所だけの上書きになる。
+    // 海の条件は場所ごとに違うが、船は同じ1艇なので土台は共有したい、という考え方。
+    var target = state.settingsTarget || 'global';
+    if (target !== 'global' && !spotById(target)) target = 'global';
+    var tabs = el('div', 'chips');
+    var opts = [{ id: 'global', label: '全体' }].concat(BOATS.map(function (b) {
+      return { id: b.id, label: b.short };
+    }));
+    opts.forEach(function (o) {
+      var btn = el('button', 'chip' + (o.id === target ? ' is-on' : ''));
+      btn.type = 'button';
+      btn.setAttribute('aria-pressed', String(o.id === target));
+      var n = o.id === 'global' ? 0 : overrideCount(spotById(o.id));
+      btn.innerHTML = esc(o.label) + (n ? '<span class="pill">' + n + '</span>' : '');
+      btn.addEventListener('click', function () {
+        state.settingsTarget = o.id;
+        renderSettings();
+      });
+      tabs.appendChild(btn);
+    });
+    card.appendChild(tabs);
+
+    var spot = target === 'global' ? null : spotById(target);
+    var eff = spot ? thresholdsFor(spot) : state.settings;
+    card.insertAdjacentHTML('beforeend', '<div class="hint" style="margin:2px 0 10px">' +
+      (spot
+        ? esc(spot.short) + 'だけの値を編集します。触っていない項目は全体の値をそのまま使います（「継承」）。'
+        : 'すべての釣り場の土台になる値です。釣り場ごとに上書きした項目はそちらが優先されます。') +
+      '</div>');
+
     SETTING_DEFS.forEach(function (def) {
-      var row = el('div', 'setting');
+      var over = spot ? (state.spotSettings[spot.id] || {}) : null;
+      var isOver = !!(over && Object.prototype.hasOwnProperty.call(over, def.key));
+      var cur = eff[def.key];
+
+      var row = el('div', 'setting' + (isOver ? ' is-override' : ''));
       var lab = el('label', null, def.label);
       lab.htmlFor = 'set-' + def.key;
-      var val = el('span', 'val', state.settings[def.key] + def.unit);
+      var val = el('span', 'val', cur + def.unit);
+      if (spot && !isOver) val.title = '全体の値を継承しています';
       var input = document.createElement('input');
       input.type = 'range';
       input.id = 'set-' + def.key;
       input.min = def.min; input.max = def.max; input.step = def.step;
-      input.value = state.settings[def.key];
+      input.value = cur;
       input.addEventListener('input', function () {
-        state.settings[def.key] = Number(input.value);
-        val.textContent = state.settings[def.key] + def.unit;
+        val.textContent = Number(input.value) + def.unit;
       });
       input.addEventListener('change', function () {
-        saveSettings(state.settings);
+        var v = Number(input.value);
+        if (spot) {
+          state.spotSettings[spot.id] = state.spotSettings[spot.id] || {};
+          state.spotSettings[spot.id][def.key] = v;
+          saveSpotSettings(state.spotSettings);
+        } else {
+          state.settings[def.key] = v;
+          saveSettings(state.settings);
+        }
+        renderSettings();
         recomputeAll();
       });
       row.appendChild(lab);
       row.appendChild(val);
       row.appendChild(input);
-      if (def.hint) row.appendChild(el('div', 'hint', def.hint));
+      if (spot) {
+        row.appendChild(el('div', 'hint', isOver
+          ? 'この釣り場だけの値（全体は ' + state.settings[def.key] + def.unit + '）'
+          : '全体の値を継承中'));
+      } else if (def.hint) {
+        row.appendChild(el('div', 'hint', def.hint));
+      }
       card.appendChild(row);
     });
 
-    var reset = el('button', null, '初期値に戻す');
+    var reset = el('button', null, spot ? esc(spot.short) + 'の上書きを消して全体に戻す' : '初期値に戻す');
     reset.type = 'button';
     reset.addEventListener('click', function () {
-      state.settings = Object.assign({}, R.DEFAULTS);
-      saveSettings(state.settings);
+      if (spot) {
+        delete state.spotSettings[spot.id];
+        saveSpotSettings(state.spotSettings);
+      } else {
+        state.settings = Object.assign({}, R.DEFAULTS);
+        saveSettings(state.settings);
+      }
       renderSettings();
       recomputeAll();
     });
     card.appendChild(reset);
     host.appendChild(card);
 
-    // 風向の説明
+    // 風向の扱いは釣り場ごとに違う。海岸の向きは利用者の好みではなく地形の事実なので、
+    // 全体設定ではなく釣り場マスタ（profile）に持たせてある。ここはその一覧。
     var dirCard = el('div', 'card');
-    dirCard.appendChild(el('h2', null, '風向の扱い（直江津のみ）'));
+    dirCard.appendChild(el('h2', null, '風向の扱い（出船地点ごと）'));
     dirCard.insertAdjacentHTML('beforeend',
-      '<div class="sub">直江津の海岸は北〜北北東を向いているため、次のように扱っています。' +
-      '陸っぱり（東京湾）には適用しません。</div>' +
-      '<dl class="kv">' +
-      '<dt>吹き付け風</dt><dd>西北西〜東北東（' + state.settings.onshoreFrom + '°〜' + state.settings.onshoreTo +
-      '°）。岸に向かって吹き、うねりが立って帰航が難しくなるため<b>1段階格下げ</b>。' +
-      '日本海の北西季節風を含めるため、北〜北東より広く取っています。</dd>' +
-      '<dt>沖出し（陸風）</dt><dd>東南東〜西南西（' + state.settings.offshoreFrom + '°〜' + state.settings.offshoreTo +
-      '°）。海面は穏やかになるが沖へ流されるため<b>警告のみ</b>で判定は下げません。</dd>' +
-      '</dl>');
+      '<div class="sub">岸に向かって吹く風は帰航が難しくなるため<b>1段階格下げ</b>、' +
+      '沖へ流される陸風は<b>警告のみ</b>で判定は下げません。海岸の向きが違えば危険な風向も変わるので、' +
+      '釣り場ごとに持っています。陸っぱりには適用しません。</div>');
+    var dirTbl = el('table');
+    var rows = '<thead><tr><th>釣り場</th><th>吹き付け風（格下げ）</th><th>沖出し（警告）</th></tr></thead><tbody>';
+    BOATS.forEach(function (spot) {
+      var t = thresholdsFor(spot);
+      rows += '<tr><th class="sticky-col">' + esc(spot.short) + '</th>' +
+        '<td>' + esc(R.dirName(t.onshoreFrom)) + '〜' + esc(R.dirName(t.onshoreTo)) +
+        ' <span class="muted">(' + fmt(t.onshoreFrom, 1) + '°〜' + fmt(t.onshoreTo, 1) + '°)</span></td>' +
+        '<td>' + esc(R.dirName(t.offshoreFrom)) + '〜' + esc(R.dirName(t.offshoreTo)) +
+        ' <span class="muted">(' + fmt(t.offshoreFrom, 1) + '°〜' + fmt(t.offshoreTo, 1) + '°)</span></td></tr>';
+    });
+    dirTbl.innerHTML = rows + '</tbody>';
+    var dirWrap = el('div', 'tbl-wrap');
+    dirWrap.appendChild(dirTbl);
+    dirCard.appendChild(dirWrap);
+    dirCard.insertAdjacentHTML('beforeend',
+      '<div class="hint" style="margin-top:8px">風速が ' + fmt(state.settings.onshoreMinWind, 1) +
+      ' m/s 未満のときは向きを問いません。弱ければどちらから吹いても帰れるためです。</div>');
     host.appendChild(dirCard);
 
     renderVerifyCard(host);
@@ -1660,10 +1915,35 @@
     stamp.className = 'stamp' + (anyStale || mins > 180 ? ' stale' : '');
   }
 
+  /**
+   * 選択中の釣り場のアンサンブルを取りにいく。
+   * 取得済み・取得中なら何もしない。失敗しても本体の判定は止めない。
+   */
+  function loadEnsemble(spot) {
+    if (!spot || !FF.ensemble) return Promise.resolve();
+    if (state.ensembles[spot.id]) return Promise.resolve();
+    if (state.ensembleLoading === spot.id) return Promise.resolve();
+    state.ensembleLoading = spot.id;
+    return fetchJson(FF.ensemble.url(spot.lat, spot.lon, 16)).then(
+      function (r) {
+        state.ensembles[spot.id] = FF.ensemble.parse(r.json);
+        state.ensembleLoading = null;
+      },
+      function (err) {
+        state.ensembleLoading = null;
+        // アンサンブルは追加情報なので、落ちても本体の判定は続ける
+        state.errors.push(spot.short + ': アンサンブル予報を取得できませんでした（' +
+          (err && err.message ? err.message : err) + '）。4モデルの比較のみ表示します。');
+      }
+    );
+  }
+
   function recomputeAll() {
     SPOTS.forEach(function (s) {
-      if (state.bundles[s.id]) state.results[s.id] = evaluateBundle(state.bundles[s.id], state.settings);
+      if (state.bundles[s.id]) state.results[s.id] = evaluateBundle(state.bundles[s.id], thresholdsFor(s));
     });
+    renderMatrix();
+    renderBoatPicker();
     renderWindows();
     renderStrip();
     renderDetail();
@@ -1693,14 +1973,15 @@
     var host = $('#ensemble');
     if (!host) return;
     host.innerHTML = '';
-    var results = state.results.naoetsu;
-    if (!results || !state.ensemble || !state.ensemble.members) return;
+    var results = boatResults();
+    var ens = currentEnsemble();
+    if (!results || !ens || !ens.members) return;
 
     var rows = [];
     var covered = 0;
     results.forEach(function (res) {
       if (!res.window || !isNum(res.window.from)) return;
-      var s = FF.ensemble.daySummary(state.ensemble, res.date, res.window.from, res.window.to, state.settings);
+      var s = FF.ensemble.daySummary(ens, res.date, res.window.from, res.window.to, state.settings);
       if (s) covered++;
       rows.push({ res: res, sum: s });
     });
@@ -1708,9 +1989,9 @@
 
     var card = el('div', 'card');
     var pLabel = results[0].window.label;
-    card.appendChild(el('h2', null, 'アンサンブル予報（' + state.ensemble.members + '本の内訳）'));
+    card.appendChild(el('h2', null, 'アンサンブル予報（' + ens.members + '本の内訳）'));
     card.insertAdjacentHTML('beforeend',
-      '<div class="sub">同じモデルを初期値を少しずつ変えて' + state.ensemble.members +
+      '<div class="sub">同じモデルを初期値を少しずつ変えて' + ens.members +
       '回走らせた結果です。' + esc(pLabel) + '帯で各本がどの判定になるかの割合を出しています。' +
       '<b>風と最大瞬間風速だけ</b>で付けた内訳で、波・雷は含みません（本体の判定とは別物です）。</div>');
 
@@ -1773,8 +2054,8 @@
     card.insertAdjacentHTML('beforeend',
       '<div class="hint" style="margin-top:8px">数字は判定帯の最大風速の「中央値 / 最も強い1本」（m/s）。' +
       '中央値が穏やかでも右の数字が大きい日は、まだ荒れる可能性が残っています。' +
-      (state.ensemble.lastDate
-        ? 'アンサンブルは ' + esc(dateLabel(state.ensemble.lastDate)) + ' まで。それ以降は4モデルの比較のみです。'
+      (ens.lastDate
+        ? 'アンサンブルは ' + esc(dateLabel(ens.lastDate)) + ' まで。それ以降は4モデルの比較のみです。'
         : '') +
       '</div>');
 
@@ -1784,9 +2065,9 @@
   function renderOfficialPanel() {
     var host = $('#official');
     host.innerHTML = '';
-    var results = state.results.naoetsu;
+    var results = boatResults();
     if (!results) return;
-    var card = renderOfficial('naoetsu', results);
+    var card = renderOfficial(currentBoat() ? currentBoat().id : null, results);
     if (card) host.appendChild(card);
     host.appendChild(yahooLinks());
   }
@@ -1825,10 +2106,16 @@
       );
     });
 
-    // 出船判断に使う直江津を先に取りにいく。制限に当たっても最重要の地点は揃う。
-    var ordered = SPOTS.slice().sort(function (a, b) {
-      return (a.kind === 'boat' ? 0 : 1) - (b.kind === 'boat' ? 0 : 1);
-    });
+    // 取得の優先順位。Open-Meteo は「変数×日数×モデル×地点」で重み付けして制限するため、
+    // 釣り場が増えるほど後ろが落ちやすい。落ちて困る順に並べる。
+    //   1. いま見ている出船地点  2. 他の出船地点  3. 陸っぱり
+    // 出船地点が10か所に増えても、この順序なら「見ている場所は必ず揃う」が保たれる。
+    var sel = state.boatSpot;
+    function priority(s) {
+      if (s.id === sel) return 0;
+      return s.kind === 'boat' ? 1 : 2;
+    }
+    var ordered = SPOTS.slice().sort(function (a, b) { return priority(a) - priority(b); });
     var spotJobs = ordered.map(function (spot) {
       return function () {
         return loadSpot(spot).then(
@@ -1845,30 +2132,21 @@
       };
     });
 
-    // アンサンブルは直江津の1地点だけ。gzip で約50KB あるので、
-    // 他の地点の取得と同じ待ち行列に入れて同時接続数を増やさない。
-    // 直江津本体の次に取りにいく（本体が揃わないうちに重い取得を始めない）。
-    var boat = SPOTS.filter(function (s) { return s.kind === 'boat'; })[0];
-    if (boat) {
-      spotJobs.splice(1, 0, function () {
-        return fetchJson(FF.ensemble.url(boat.lat, boat.lon, 16)).then(
-          function (r) { state.ensemble = FF.ensemble.parse(r.json); },
-          function (err) {
-            // アンサンブルは追加情報なので、落ちても本体の判定は続ける
-            state.errors.push('アンサンブル予報を取得できませんでした（' +
-              (err && err.message ? err.message : err) + '）。4モデルの比較のみ表示します。');
-          }
-        );
-      });
+    // アンサンブルは gzip で1地点あたり約50KB ある。出船地点が増えても取得量が
+    // 増えないよう、いま見ている1か所だけを取る。釣り場を切り替えたときは
+    // loadEnsemble() が改めて呼ばれる（30分キャッシュがあるので戻る操作は無料）。
+    var selBoat = currentBoat();
+    if (selBoat) {
+      // 本体が揃わないうちに重い取得を始めないよう、選択地点の次に差し込む。
+      spotJobs.splice(1, 0, function () { return loadEnsemble(selBoat); });
     }
 
     return Promise.all(jmaJobs.concat([throttled(spotJobs, 2)])).then(function () {
       $('#loading').style.display = 'none';
       btn.disabled = false;
       btn.textContent = '再取得';
-      if (!state.selectedDate && state.bundles.naoetsu) {
-        state.selectedDate = state.bundles.naoetsu.dates[0];
-      }
+      var cb = boatBundle();
+      if (!state.selectedDate && cb) state.selectedDate = cb.dates[0];
       recomputeAll();
       showErrors();
       renderCoverageNote();
@@ -1878,12 +2156,14 @@
   function renderCoverageNote() {
     var host = $('#coverage');
     host.innerHTML = '';
-    var b = state.bundles.naoetsu;
+    var b = boatBundle();
     if (!b) return;
+    var spot = currentBoat();
     var bits = [];
+    if (spot) bits.push(esc(spot.name) + '（潮汐: 気象庁 ' + (TIDE.STATION_NAMES[spot.tide] || spot.tide) + '）');
     if (b.waveLastDate) bits.push('波浪予報は ' + dateLabel(b.waveLastDate) + ' まで');
     if (b.marine) bits.push('波浪の格子点は釣り場から約 ' + b.marine.distanceKm.toFixed(1) + ' km');
-    var cov = TIDE.coverage('T3');
+    var cov = TIDE.coverage(spot ? spot.tide : 'T3');
     if (cov) {
       var lastNeeded = b.dates[b.dates.length - 1];
       if (lastNeeded > cov.last) {

@@ -490,3 +490,80 @@ footer a { color: var(--text-secondary); }
 @media print {
   nav.tabs, header button { display: none; }
 }
+
+/* ---------------------------------------------------------------- 複数出船地点 */
+
+/* 釣り場を選ぶ・設定の対象を選ぶための小ボタン。
+   出船地点は今後増えるので、横に伸ばさず折り返す。屋外で押せるよう最低44pxを確保する。 */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.chip {
+  min-height: 34px;
+  padding: 6px 12px;
+  border: 1px solid var(--grid);
+  border-radius: 999px;
+  background: var(--surface-1);
+  color: var(--text-primary);
+  font-size: .85rem;
+  cursor: pointer;
+}
+.chip:hover { background: var(--surface-sunk); }
+.chip.is-on { border-color: var(--s1); background: var(--surface-sunk); font-weight: 600; }
+.chip .pill {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--s1);
+  color: #fff;
+  font-size: .7rem;
+  font-weight: 600;
+}
+
+/* 釣り場セレクタ。地域ごとに1行。 */
+.picker { display: grid; gap: 6px; margin: 0 0 10px; }
+.picker-group { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.picker-label {
+  font-size: .76rem;
+  color: var(--text-muted);
+  min-width: 4.5em;
+}
+
+/* 横断比較の表。記号だけを敷き詰めるので列は詰める。 */
+table.matrix { min-width: 0; font-size: .8rem; }
+table.matrix th, table.matrix td { padding: 3px 4px; text-align: center; }
+table.matrix thead th { font-size: .7rem; line-height: 1.15; }
+table.matrix .mx-dow, table.matrix .mx-md { display: block; }
+table.matrix thead th.sun { color: var(--critical); }
+table.matrix thead th.sat { color: var(--s1); }
+table.matrix .mx-name { font-size: .8rem; white-space: nowrap; }
+table.matrix tr.is-selected .mx-name { font-weight: 700; }
+table.matrix tr.mx-region th {
+  font-size: .72rem;
+  color: var(--text-muted);
+  padding-top: 8px;
+  border-bottom: none;
+}
+table.matrix tr.mx-region td { border-bottom: none; }
+.mx-cell { padding: 0; }
+.mx-btn {
+  display: block;
+  width: 100%;
+  min-width: 26px;
+  min-height: 30px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.mx-btn.grade-good { color: var(--good); }
+.mx-btn.grade-fair { color: var(--s1); }
+.mx-btn.grade-marginal { color: var(--warning); }
+.mx-btn.grade-bad { color: var(--critical); }
+.mx-btn.grade-none { color: var(--text-muted); }
+.mx-btn:hover { background: var(--surface-sunk); }
+.mx-btn.is-on { border-color: var(--s1); background: var(--surface-sunk); font-weight: 700; }
+
+/* 釣り場ごとに上書きされている設定行は、継承中の行と見分けが付くようにする */
+.setting.is-override { border-left: 3px solid var(--s1); padding-left: 8px; }

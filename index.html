@@ -20,9 +20,9 @@
 </header>
 
 <nav class="tabs" role="tablist">
-  <button type="button" role="tab" data-tab="boat" aria-selected="true">上越 出船</button>
-  <button type="button" role="tab" data-tab="shore" aria-selected="false">東京湾 陸っぱり</button>
-  <button type="button" role="tab" data-tab="settings" aria-selected="false">設定・データの限界</button>
+  <button type="button" role="tab" data-tab="boat" aria-selected="true">出船</button>
+  <button type="button" role="tab" data-tab="shore" aria-selected="false">陸っぱり</button>
+  <button type="button" role="tab" data-tab="settings" aria-selected="false">設定・限界</button>
   <button type="button" role="tab" data-tab="manual" aria-selected="false">使い方</button>
 </nav>
 
@@ -31,6 +31,10 @@
   <div id="loading" class="spinner">気象・波浪データを取得しています…</div>
 
   <section id="tab-boat" role="tabpanel">
+    <!-- 出船地点の横断比較。釣り場が増えるほど「どこなら出せるか」が主問題になるので先頭に置く -->
+    <div id="matrix"></div>
+    <!-- 釣り場の選択。以下のパネルはすべて選択中の1か所について描く -->
+    <div id="boat-picker"></div>
     <div id="coverage" class="muted" style="margin-bottom:10px"></div>
     <div id="windows"></div>
     <div id="strip"></div>
@@ -75,6 +79,7 @@
 <script src="data/yahoo.js"></script>
 <!-- 予報の答え合わせ（tools/Record-Forecast.ps1 が生成）。無くてもアプリは動く -->
 <script src="data/verify.js"></script>
+<script src="assets/spots.js"></script>
 <script src="assets/tide.js"></script>
 <script src="assets/rating.js"></script>
 <script src="assets/ensemble.js"></script>

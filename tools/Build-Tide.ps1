@@ -51,6 +51,7 @@ $Stations = @(
     [pscustomobject]@{ Code = 'T3'; Ascii = 'Naoetsu';  Lat = 37.183; Lon = 138.250 }
     [pscustomobject]@{ Code = 'TK'; Ascii = 'Tokyo';    Lat = 35.650; Lon = 139.767 }
     [pscustomobject]@{ Code = 'QS'; Ascii = 'Yokohama'; Lat = 35.450; Lon = 139.650 }
+    [pscustomobject]@{ Code = 'QN'; Ascii = 'Yokosuka'; Lat = 35.288; Lon = 139.665 }
 )
 
 $BaseUrl = 'https://www.data.jma.go.jp/kaiyou/data/db/tide/suisan/txt'
